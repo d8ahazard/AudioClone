@@ -1,0 +1,9 @@
+/.venv
+/checkpoint
+/.idea
+/espeak-ng-data
+/outputs
+espeak-ng.exe
+/processed
+__pycache__
+libespeak-ng.dll
