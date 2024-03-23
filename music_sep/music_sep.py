@@ -1,6 +1,7 @@
 # coding: utf-8
 __author__ = 'https://github.com/ZFTurbo/'
 
+import gc
 from typing import List, Optional, Callable
 
 if __name__ == '__main__':
@@ -573,8 +574,10 @@ class EnsembleDemucsMDXMusicSeparationModelLowGPU:
             update_percent_func(int(val))
 
         vocals_demucs += 0.5 * -apply_model(model_vocals, -audio, shifts=shifts, overlap=overlap)[0][3].cpu().numpy()
-        model_vocals = model_vocals.cpu()
         del model_vocals
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         if update_percent_func is not None:
             val = 100 * (current_file_number + 0.20) / total_files
@@ -680,8 +683,10 @@ class EnsembleDemucsMDXMusicSeparationModelLowGPU:
         out[2] = self.weights_other[i] * out[2]
         out[3] = self.weights_vocals[i] * out[3]
         all_outs.append(out)
-        model = model.cpu()
         del model
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         i = 1
         overlap = overlap_large
@@ -699,8 +704,10 @@ class EnsembleDemucsMDXMusicSeparationModelLowGPU:
         out[2] = self.weights_other[i] * out[2]
         out[3] = self.weights_vocals[i] * out[3]
         all_outs.append(out)
-        model = model.cpu()
         del model
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         i = 2
         overlap = overlap_large
@@ -721,8 +728,10 @@ class EnsembleDemucsMDXMusicSeparationModelLowGPU:
         out[2] = self.weights_other[i] * out[2]
         out[3] = self.weights_vocals[i] * out[3]
         all_outs.append(out)
-        model = model.cpu()
         del model
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         i = 3
         model = pretrained.get_model('hdemucs_mmi')
@@ -739,8 +748,10 @@ class EnsembleDemucsMDXMusicSeparationModelLowGPU:
         out[2] = self.weights_other[i] * out[2]
         out[3] = self.weights_vocals[i] * out[3]
         all_outs.append(out)
-        model = model.cpu()
         del model
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         out = np.array(all_outs).sum(axis=0)
         out[0] = out[0] / self.weights_drums.sum()
@@ -857,6 +868,11 @@ def separate_music(input_audio: List[str], output_folder: str, cpu: bool = False
     if update_percent_func is not None:
         val = 100
         update_percent_func(int(val), f"Separated {len(input_audio)} files")
+    del model
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     return outputs
 
 

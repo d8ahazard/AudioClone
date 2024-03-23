@@ -159,11 +159,24 @@ def merge_stems(stem_files, tgt_file, project_path: str):
     print(f"Combining stems to {tgt_file}")
     # Define the output file name
     output_file = update_filename(tgt_file, "joined", project_path)
-
     # Load and combine each stem
     for file in stem_files:
-        print(f"Loading stem: {file}")
-        stem = AudioSegment.from_file(file)
+        stem = None
+        load_attempt = 0
+        load_failed = True
+        while load_attempt < 3 and load_failed:
+            try:
+                print(f"Loading stem: {file}")
+                stem = AudioSegment.from_file(file)
+                load_failed = False
+                print(f"Loaded stem: {file}")
+            except Exception as e:
+                print(f"Failed to load {file} with error: {e}")
+                load_attempt += 1
+                sleep(1)
+        if stem is None:
+            print(f"Failed to load {file}. Skipping...")
+            continue
         if combined is None:
             combined = stem
         else:
@@ -297,6 +310,8 @@ def join_audio(chunks: list[str], out_name: str):
             list_file.write(f"file '{chunk}'\n")
     subprocess.run(f"ffmpeg -y -f concat -safe 0 -i {list_file_path} -c copy {out_name}",
                    shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # Set file permissions to read/write for owner and read for others
+    os.chmod(out_name, 0o644)
     os.remove(list_file_path)
     # Remove the chunks
     shutil.rmtree(os.path.join(out_dir, "chunks"), ignore_errors=True)
@@ -483,6 +498,9 @@ def handle_tgt_speaker_change(file_path):
         if not os.path.exists(temp_file_path):
             shutil.move(file_path, temp_path)
             sleep(0.5)
+        if os.path.exists(file_path):
+            # Really delete it
+            os.remove(file_path)
         file_path = temp_file_path
         if is_video(file_path):
             target_video = gr.update(visible=True, value=file_path)
