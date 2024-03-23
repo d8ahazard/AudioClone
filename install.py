@@ -16,7 +16,10 @@ def pip_install(package: Union[str, List[str]], uninstall=False):
     if result.returncode != 0:
         print(f"Failed to {'un-' if uninstall else ''}install {package}. Error: {result.stderr}")
     else:
-        print(f"Successfully {'un-' if uninstall else ''}installed {package}")
+        if "Successfully installed" in result.stdout:
+            print(f"Successfully {'un-' if uninstall else ''}installed {package}")
+        elif "already satisfied" in result.stdout:
+            print(f"{package} is already installed")
 
 
 requirements_file = os.path.join(os.path.dirname(os.path.realpath(__file__)), "requirements.txt")
@@ -35,9 +38,10 @@ with open(requirements_file, "r") as f:
             packages.append(line)
 
 for package in packages:
+    print(f"Installing {package}")
     pip_install(package)
 
-torch_cmd = ["torch==2.1.0", "torchaudio==2.1.0", "torchlibrosa==0.1.0", "torchvision==0.16.0", "--index-url", "https://download.pytorch.org/whl/torch_stable.html"]
+torch_cmd = ["torch==2.1.0", "torchaudio==2.1.0", "torchlibrosa==0.1.0", "torchvision==0.16.0", "--index-url", "https://download.pytorch.org/whl/cu121"]
 pip_install(torch_cmd)
 pip_install(["onnxruntime-gpu", "onnxruntime"], True)
 pip_install("onnxruntime-gpu")
