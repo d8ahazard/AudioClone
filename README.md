@@ -1,4 +1,4 @@
-```
+
 # AudioClone: Audio Enhancement and Voice Cloning Web Application
 
 This web application offers a suite of advanced audio processing features, including noise reduction, audio separation, music extraction, and voice cloning. Utilizing state-of-the-art machine learning models and audio processing techniques, it provides an intuitive interface for enhancing audio files and cloning voices with remarkable accuracy.
@@ -29,18 +29,28 @@ This web application offers a suite of advanced audio processing features, inclu
 
 1. Clone this repository or download the source code.
 2. Navigate to the root directory of the application.
+3. Create a virtual environment. For example, using `venv`:
+
+```
+bash
+python -m venv venv
+source venv/bin/activate
+```
+
 3. Install the required Python packages:
 
-```bash
-pip install -r requirements.txt
+```
+bash
+python ./install.py
 ```
 
 ### Running the Application
 
 Execute the main script to start the web application:
 
-```bash
-python main_script.py
+```
+bash
+python ./main.py
 ```
 
 This command launches a local server, and the web interface can be accessed through a web browser at the URL provided in the terminal output (typically `http://127.0.0.1:7860`).
@@ -59,4 +69,4 @@ This application is open-source, and contributions are welcome. Whether it's a f
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
-```
+
