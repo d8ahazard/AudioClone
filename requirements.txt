@@ -8,17 +8,17 @@ h5py==3.10.0
 ipdb==0.13.13
 librosa==0.10.0
 lightning==2.2.1
-noisereduce
+noisereduce==3.0.2
 numpy==1.22.0
+onnx>=1.15.0
 pyloudnorm==0.1.1
 regex==2023.12.25
 scipy==1.11.4
 soundfile==0.12.1
-onnxruntime-gpu==1.17.1
-git+https://github.com/openai/whisper.git
 timm==0.3.2
 tqdm==4.66.2
 transformers==4.33.0
 tts==0.22.0
+wandb==0.16.4
 wget==3.2
 --extra-index-url https://download.pytorch.org/whl/cu121

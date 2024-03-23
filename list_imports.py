@@ -3,6 +3,10 @@ import pkgutil
 import sys
 import pkg_resources
 
+alt_names = {
+    "PIL": "Pillow",
+    "OpenCV": "opencv-python"
+}
 # List all standard library modules
 std_lib = {name for _, name, _ in pkgutil.iter_modules() if name in sys.builtin_module_names}
 
@@ -28,7 +32,11 @@ for file in all_files:
                     base_module = parts[1].split("as")[0].strip()
                 else:
                     base_module = parts[1].split(".")[0].strip()
+                if "." in base_module:
+                    base_module = base_module.split(".")[0]
                 if base_module:
+                    # Check if the base module is an alternative name
+                    base_module = alt_names.get(base_module, base_module)
                     all_imports.add(base_module.lower())
 
 print(f"All Imports: {all_imports}")

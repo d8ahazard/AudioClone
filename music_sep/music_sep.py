@@ -306,7 +306,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
             update_percent_func=None,
             current_file_number=0,
             total_files=0,
-            only_vocals=False,
+            only_vocals=True,
     ):
         """
         Implements the sound separation for a single sound file
@@ -319,6 +319,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
             output_sample_rates: Dictionary of sample rates separated sequence
         """
 
+
         # print('Update percent func: {}'.format(update_percent_func))
 
         separated_music_arrays = {}
@@ -330,21 +331,28 @@ class EnsembleDemucsMDXMusicSeparationModel:
         overlap_large = self.overlap_large
         overlap_small = self.overlap_small
 
+        total_steps = 5 if only_vocals else 8 + len(self.models) * 2  # Adjust total steps based on conditions
+        step_counter = 0  # Initialize step counter
+
+        # Function to update the progress
+        def update_progress(message="Processing"):
+            nonlocal step_counter
+            step_counter += 1
+            if update_percent_func is not None:
+                progress = min(step_counter/total_steps, total_steps/total_steps)
+                update_percent_func(progress, message)
+
         # Get Demics vocal only
         model = self.model_vocals_only
         shifts = 1
         overlap = overlap_large
         vocals_demucs = 0.5 * apply_model(model, audio, shifts=shifts, overlap=overlap)[0][3].cpu().numpy()
 
-        if update_percent_func is not None:
-            val = 100 * (current_file_number + 0.10) / total_files
-            update_percent_func(int(val))
+        update_progress("Demucs vocal only")
 
         vocals_demucs += 0.5 * -apply_model(model, -audio, shifts=shifts, overlap=overlap)[0][3].cpu().numpy()
 
-        if update_percent_func is not None:
-            val = 100 * (current_file_number + 0.20) / total_files
-            update_percent_func(int(val))
+        update_progress("Demixing full..")
 
         overlap = overlap_large
         sources1 = demix_full(
@@ -358,9 +366,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
 
         vocals_mdxb1 = sources1
 
-        if update_percent_func is not None:
-            val = 100 * (current_file_number + 0.30) / total_files
-            update_percent_func(int(val))
+        update_progress("Demix full 1")
 
         if self.single_onnx is False:
             sources2 = -demix_full(
@@ -382,9 +388,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
             weights = np.array([6, 1])
             vocals = (weights[0] * vocals_mdxb1.T + weights[1] * vocals_demucs.T) / weights.sum()
 
-        if update_percent_func is not None:
-            val = 100 * (current_file_number + 0.40) / total_files
-            update_percent_func(int(val))
+        update_progress("Demix full 2")
 
         # vocals
         separated_music_arrays['vocals'] = vocals
@@ -398,6 +402,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
             audio = torch.from_numpy(audio).type('torch.FloatTensor').to(self.device)
 
             all_outs = []
+            model_names = ["drums", "bass", "other", "vocals"]
             for i, model in enumerate(self.models):
                 if i == 0:
                     overlap = overlap_small
@@ -406,9 +411,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
                 out = 0.5 * apply_model(model, audio, shifts=shifts, overlap=overlap)[0].cpu().numpy() \
                       + 0.5 * -apply_model(model, -audio, shifts=shifts, overlap=overlap)[0].cpu().numpy()
 
-                if update_percent_func is not None:
-                    val = 100 * (current_file_number + 0.50 + i * 0.10) / total_files
-                    update_percent_func(int(val))
+                update_progress(f"Processing instrument: {model_names[i]}")
 
                 if i == 2:
                     # ['drums', 'bass', 'other', 'vocals', 'guitar', 'piano']
@@ -452,10 +455,14 @@ class EnsembleDemucsMDXMusicSeparationModel:
             separated_music_arrays['other'] = mixed_sound_array - vocals - bass - drums
             separated_music_arrays['drums'] = mixed_sound_array - vocals - bass - other
             separated_music_arrays['bass'] = mixed_sound_array - vocals - drums - other
+        else:
+            update_progress("Separating vox from other...")
+            # Combine all non-vocal sounds into the "other" track
+            other = mixed_sound_array - vocals
+            separated_music_arrays['other'] = other
+            output_sample_rates['other'] = sample_rate
 
-        if update_percent_func is not None:
-            val = 100 * (current_file_number + 0.95) / total_files
-            update_percent_func(int(val))
+        update_progress("Separation complete...")
 
         return separated_music_arrays, output_sample_rates
 
@@ -780,8 +787,8 @@ class EnsembleDemucsMDXMusicSeparationModelLowGPU:
 
 def separate_music(input_audio: List[str], output_folder: str, cpu: bool = False, overlap_large: float = 0.6,
                    overlap_small: float = 0.5, single_onnx: bool = False, chunk_size: int = 1000000,
-                   large_gpu: bool = False, use_kim_model_1: bool = False, only_vocals: bool = False,
-                   update_percent_func: Optional[Callable[[int], None]] = None) -> List[str]:
+                   large_gpu: bool = False, use_kim_model_1: bool = False, only_vocals: bool = True,
+                   update_percent_func: Optional[Callable[[int, str], None]] = None) -> List[str]:
     for file in input_audio:
         if not os.path.isfile(file):
             print('Error. No such file: {}. Please check path!'.format(file))
@@ -789,7 +796,14 @@ def separate_music(input_audio: List[str], output_folder: str, cpu: bool = False
 
     if not os.path.isdir(output_folder):
         os.mkdir(output_folder)
-
+    # If CUDA is available, get the total VRAM
+    total_vram = 0
+    if torch.cuda.is_available():
+        for i in range(torch.cuda.device_count()):
+            total_vram += torch.cuda.get_device_properties(i).total_memory
+    # If total VRAM is greater than 16GB, use the large GPU memory version of the code
+    if total_vram > 16 * 1024 * 1024 * 1024:
+        large_gpu = True
     model = None
     if model is None:
         if large_gpu is True:
@@ -800,7 +814,7 @@ def separate_music(input_audio: List[str], output_folder: str, cpu: bool = False
             model = EnsembleDemucsMDXMusicSeparationModelLowGPU(cpu, single_onnx, use_kim_model_1, overlap_large, overlap_small, chunk_size)
     outputs = []
     for i, input_audio in enumerate(input_audio):
-        print('Go for: {}'.format(input_audio))
+        print('Separating: {}'.format(input_audio))
         audio, sr = librosa.load(input_audio, mono=False, sr=44100)
         if len(audio.shape) == 1:
             audio = np.stack([audio, audio], axis=0)
@@ -842,7 +856,7 @@ def separate_music(input_audio: List[str], output_folder: str, cpu: bool = False
 
     if update_percent_func is not None:
         val = 100
-        update_percent_func(int(val))
+        update_percent_func(int(val), f"Separated {len(input_audio)} files")
     return outputs
 
 

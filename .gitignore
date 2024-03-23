@@ -1,6 +1,7 @@
 /.venv
-/checkpoint
+/checkpoint/*
 /.idea
+/temp
 /espeak-ng-data
 /outputs
 espeak-ng.exe
