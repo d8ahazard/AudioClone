@@ -1,39 +1,209 @@
-# coding: utf-8
-__author__ = 'https://github.com/ZFTurbo/'
-
 import gc
+import io
+import os
+import platform
+import shutil
+import subprocess
+from pathlib import Path
+from time import time, sleep
 from typing import List, Optional, Callable
 
-from helpers import printt
-
-if __name__ == '__main__':
-    import os
-
-    gpu_use = "0"
-    print('GPU use: {}'.format(gpu_use))
-    os.environ["CUDA_VISIBLE_DEVICES"] = "{}".format(gpu_use)
-
+import filetype
+import gradio as gr
+import librosa
+import matplotlib.pyplot as plt
+import noisereduce as nr
 import numpy as np
-import torch
-import torch.nn as nn
-import os
+import onnxruntime as ort
+import psutil
+import requests
 import soundfile as sf
-
-from demucs.states import load_model
+import torch
+import whisper
+from PIL import Image
+from TTS.api import TTS
 from demucs import pretrained
 from demucs.apply import apply_model
-import onnxruntime as ort
-from time import time
-import librosa
-import hashlib
+from demucs.states import load_model
+from openvoice_cli import se_extractor
+from openvoice_cli.api import ToneColorConverter
+from pydub import AudioSegment
+from scipy.io import wavfile
+from torch import nn as nn
+from tqdm import tqdm
 
-__VERSION__ = '1.0.1'
+tts = None
+timer = None
+ui_args = None
+last_time = time()
+vram_supported = False
+print_debug = False
+project_uuid = None
+
+if torch.cuda.is_available():
+    vram_supported = True
+
+models = {
+    "freevc24": "voice_conversion_models/multilingual/vctk/freevc24",
+    "audiosep": "Audio-AGI/AudioSep"
+}
+
+device = torch.device('cpu') if platform.system() == 'Darwin' else torch.device('cuda:0')
+
+
+# region Debugging/Performance
+
+
+def printt(msg, reset: bool = False):
+    global ui_args, last_time, timer, print_debug
+
+    graph = None
+    if timer is None:
+        timer = PerfTimer(print_log=True)
+    if reset:
+        graph = timer.make_graph()
+        timer.reset()
+    timer.print_log = print_debug
+    timer.record(msg)
+    if graph:
+        return graph
+
+
+class PerfTimer:
+    def __init__(self, print_log=False):
+        self.start = time()
+        self.records = {}
+        self.total = 0
+        self.base_category = ''
+        self.print_log = print_log
+        self.subcategory_level = 0
+        self.ram_records = []
+        self.vram_records = []
+        self.time_points = []
+
+    def get_ram_usage(self):
+        return psutil.Process().memory_info().rss / (1024 ** 3)  # GB
+
+    def get_vram_usage(self):
+        if vram_supported:  # Ensure vram_supported is defined and correctly determines if VRAM usage can be checked
+            torch.cuda.synchronize()  # Wait for all kernels in all streams on a CUDA device to complete
+            info = torch.cuda.memory_stats()  # Get detailed CUDA memory stats
+            used = info['allocated_bytes.all.peak']  # Get peak allocated bytes
+            return used / (1024 ** 3)  # Convert bytes to GB
+        return 0
+
+    def elapsed(self):
+        end = time()
+        res = end - self.start
+        self.start = end
+        return res
+
+    def add_time_to_record(self, category, amount):
+        if category not in self.records:
+            self.records[category] = 0
+
+        self.records[category] += amount
+
+    def record(self, category, extra_time=0, disable_log=False):
+        e = self.elapsed()
+        ram_usage = self.get_ram_usage()
+        vram_usage = self.get_vram_usage()
+
+        self.add_time_to_record(self.base_category + category, e + extra_time)
+
+        self.total += e + extra_time
+        self.time_points.append(self.total)
+        self.ram_records.append(ram_usage)
+        self.vram_records.append(vram_usage)
+
+        if self.print_log and not disable_log:
+            # Calculate the dynamic width for the category part
+            category_width = int(80 * 0.75) - 2 * self.subcategory_level
+            stats_width = 80 - category_width - 2 * self.subcategory_level
+
+            # Prepare the format strings for both parts
+            category_fmt = "{:" + str(category_width) + "}"
+            stats_fmt = "{:>" + str(stats_width) + "}"
+
+            # Format the category part and stats part separately
+            category_part = category_fmt.format(f"{'  ' * self.subcategory_level}{category}:")
+            stats_part = stats_fmt.format(
+                f"done in {e + extra_time:.3f}s, RAM: {ram_usage:.2f}GB, VRAM: {vram_usage:.2f}GB")
+
+            # Combine and print the full line
+            print(category_part + stats_part)
+
+    def make_graph(self):
+        plt.figure(figsize=(10, 6))
+        plt.plot(self.time_points, self.ram_records, label='RAM Usage (GB)', marker='o')
+        if vram_supported:
+            plt.plot(self.time_points, self.vram_records, label='VRAM Usage (GB)', marker='x')
+        plt.xlabel('Time (s)')
+        plt.ylabel('Usage (GB)')
+        plt.title('Performance Over Time')
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+
+        img_buf = io.BytesIO()
+        plt.savefig(img_buf, format='png')
+        img_buf.seek(0)
+        image = Image.open(img_buf)
+        img_buf.close()
+
+        return image
+
+    def summary(self):
+        res = f"{self.total:.1f}s"
+
+        additions = [(category, time_taken) for category, time_taken in self.records.items() if
+                     time_taken >= 0.1 and '/' not in category]
+        if not additions:
+            return res
+
+        res += " ("
+        res += ", ".join([f"{category}: {time_taken:.1f}s" for category, time_taken in additions])
+        res += ")"
+
+        return res
+
+    def dump(self):
+        return {'total': self.total, 'records': self.records, 'ram_usage': self.ram_records,
+                'vram_usage': self.vram_records, 'time_points': self.time_points}
+
+    def reset(self):
+        self.__init__()
 
 
 def free_mem():
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+
+# endregion
+
+# region Music Separation
+
+def sep_music(audio_path: str, project_path: str, return_all: bool = False, vox_only: bool = True) -> str:
+    progress = gr.Progress()
+
+    def update_sep_progress(percent: int, desc: str = "Separating audio"):
+        progress(percent, desc=desc)
+
+    use_cuda = torch.cuda.is_available()
+    output_file = update_filename(audio_path, "separated", project_path)
+    out_files = separate_music([audio_path], os.path.dirname(output_file), cpu=not use_cuda,
+                               update_percent_func=update_sep_progress, only_vocals=vox_only)
+    if not out_files:
+        return ""
+    if return_all:
+        return out_files
+    for file in out_files:
+        if "vocal" in file:
+            print(f"Found vocal file: {file}")
+            return file
+    return ""
 
 
 class Conv_TDF_net_trim_model(nn.Module):
@@ -224,7 +394,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
             self.overlap_small = 0.99
         if self.overlap_small < 0.0:
             self.overlap_small = 0.0
-        model_folder = os.path.join(os.path.abspath(os.path.dirname(__file__)), "..", "checkpoint")
+        model_folder = os.path.abspath(os.path.join(os.path.dirname(__file__), "checkpoint"))
         remote_url = 'https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/04573f0d-f3cf25b2.th'
         model_path = os.path.join(model_folder, '04573f0d-f3cf25b2.th')
         if not os.path.isfile(model_path):
@@ -675,7 +845,7 @@ class EnsembleDemucsMDXMusicSeparationModelLowGPU:
         overlap_small = self.overlap_small
 
         # Get Demucs vocal only
-        model_folder = os.path.join(os.path.abspath(os.path.dirname(__file__)), "..", "checkpoint")
+        model_folder = os.path.abspath(os.path.join(os.path.dirname(__file__), "checkpoint"))
         remote_url = 'https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/04573f0d-f3cf25b2.th'
         model_path = os.path.join(model_folder, '04573f0d-f3cf25b2.th')
         os.makedirs(model_folder, exist_ok=True)
@@ -1019,9 +1189,319 @@ def separate_music(input_audio: List[str], output_folder: str, cpu: bool = False
     return outputs
 
 
-def md5(fname):
-    hash_md5 = hashlib.md5()
-    with open(fname, "rb") as f:
-        for chunk in iter(lambda: f.read(4096), b""):
-            hash_md5.update(chunk)
-    return hash_md5.hexdigest()
+# endregion
+
+# region Cloning
+def clone_voice_tts(target_file: str, source_speaker: str, project_path: str):
+    if not is_audio(target_file):
+        return ""
+    global tts
+    load_tts()
+    if not isinstance(tts, TTS):
+        return ""
+    out_file = update_filename(target_file, "cloned-tts", project_path)
+    chunks = chunk_audio(target_file, 60, project_path)
+    if not chunks:
+        return ""
+    converted = []
+    for chunk in chunks:
+        print(f"Converting chunk: {chunk}")
+        out_name = os.path.join(out_file, "chunks", "converted", os.path.basename(chunk))
+        os.makedirs(os.path.dirname(out_name), exist_ok=True)
+        try:
+            tts.voice_conversion_to_file(source_wav=chunk, target_wav=source_speaker, file_path=out_name)
+        except Exception as e:
+            print(f"Failed to convert {chunk} with error: {e}")
+            # Copy the original chunk to the converted directory
+            out_name = os.path.join(out_file, "chunks", "converted", os.path.basename(chunk))
+            os.makedirs(os.path.dirname(out_name), exist_ok=True)
+            shutil.copy(chunk, out_name)
+            continue
+        converted.append(out_name)
+    print("Joining audio")
+    out_file = join_audio(converted, out_file)
+    return out_file
+
+
+def clone_voice_openvoice(target_speaker: str, source_speaker: str, project_path: str):
+    if not is_audio(target_speaker):
+        return ""
+    out_file = update_filename(target_speaker, "cloned-openvoice", project_path)
+    current_dir = os.path.dirname(os.path.realpath(__file__))
+    checkpoints_dir = os.path.join(current_dir, 'checkpoint')
+    ckpt_converter = os.path.join(checkpoints_dir, 'converter')
+
+    if not os.path.exists(ckpt_converter):
+        os.makedirs(ckpt_converter, exist_ok=True)
+        download_checkpoint(ckpt_converter)
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    printt("Loading OpenVoice converter")
+    tone_color_converter = ToneColorConverter(os.path.join(ckpt_converter, 'config.json'), device=device)
+    tone_color_converter.load_ckpt(os.path.join(ckpt_converter, 'checkpoint.pth'))
+    printt("Loading SE extractor")
+    source_se, _ = se_extractor.get_se(target_speaker, tone_color_converter, vad=True)
+    printt("Extracting SE for target speaker")
+    target_se, _ = se_extractor.get_se(source_speaker, tone_color_converter, vad=True)
+    printt("Extracted SE for target speaker")
+    # Ensure output directory exists and is writable
+    output_dir = os.path.dirname(out_file)
+    if output_dir:
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+
+    # Run the tone color converter
+    tone_color_converter.convert(
+        audio_src_path=target_speaker,
+        src_se=source_se,
+        tgt_se=target_se,
+        output_path=out_file,
+    )
+    printt(f"Cloned voice to {out_file}")
+    del tone_color_converter
+    del source_se
+    del target_se
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    printt(f"Clone cleanup complete.")
+    return out_file
+
+
+# endregion
+
+# region Model Management
+
+def download_file(url, destination):
+    response = requests.get(url, stream=True)
+    total_size_in_bytes = int(response.headers.get('content-length', 0))
+    block_size = 1024  # 1 Kibibyte
+
+    progress_bar = tqdm(total=total_size_in_bytes, unit='iB', unit_scale=True)
+
+    with open(destination, 'wb') as file:
+        for data in response.iter_content(block_size):
+            progress_bar.update(len(data))
+            file.write(data)
+
+    progress_bar.close()
+
+
+def download_checkpoint(dest_dir):
+    # Define paths
+    model_path = Path(dest_dir)
+
+    # Define files and their corresponding URLs
+    files_to_download = {
+        "checkpoint.pth": f"https://huggingface.co/myshell-ai/OpenVoice/resolve/main/checkpoints/converter/checkpoint.pth?download=true",
+        "config.json": f"https://huggingface.co/myshell-ai/OpenVoice/raw/main/checkpoints/converter/config.json",
+    }
+
+    # Check and create directories
+    os.makedirs(model_path, exist_ok=True)
+
+    # Download files if they don't exist
+    for filename, url in files_to_download.items():
+        destination = model_path / filename
+        if not destination.exists():
+            print(f"[OpenVoice Converter] Downloading {filename}...")
+            download_file(url, destination)
+
+
+def get_project_path(filename: str) -> str:
+    basename_no_ext = os.path.splitext(os.path.basename(filename))[0]
+    basename = basename_no_ext.replace(" ", "_")
+    project_path = os.path.join(os.path.dirname(__file__), "outputs", basename)
+    os.makedirs(project_path, exist_ok=True)
+    return project_path
+
+
+def load_tts():
+    global tts, device
+    if tts is None:
+        tts = TTS(model_name=models["freevc24"]).to(device)
+
+
+# endregion
+
+# region File Management
+
+# Module level variable
+def set_project_uuid(uuid):
+    global project_uuid
+    project_uuid = uuid
+
+
+def process_input(tgt_file, project_path):
+    if is_video(tgt_file):
+        return extract_audio(tgt_file, project_path)
+    if tgt_file.endswith(".mp3"):
+        wav_file = tgt_file.replace(".mp3", ".wav")
+        audio = AudioSegment.from_mp3(tgt_file)
+        audio.export(wav_file, format="wav")
+        return wav_file
+    return tgt_file
+
+
+def is_video(video_path: str) -> bool:
+    return os.path.isfile(video_path) and filetype.is_video(video_path)
+
+
+def is_audio(audio_path: str) -> bool:
+    return os.path.isfile(audio_path) and filetype.is_audio(audio_path)
+
+
+def update_filename(filename: str, process_name: str, project_path: str = None) -> str:
+    global project_uuid
+    if process_name in filename:
+        return filename
+    extension = os.path.splitext(filename)[1]  # This already includes the dot (e.g., ".wav")
+    filename = os.path.splitext(os.path.basename(filename))[0]
+    dirname = os.path.dirname(filename) if project_path is None else project_path
+    os.makedirs(dirname, exist_ok=True)
+    filename_parts = filename.split("_")
+    process_names = ["separated", "replaced", "cleaned", "joined", "cloned-tts", "cloned-openvoice", project_uuid]
+    # Separate the process names from the filename
+    f_process_names = [f for f in process_names if f in filename_parts and f != project_uuid]
+    # Get the original filename parts
+    filename_parts = [f for f in filename_parts if f not in f_process_names and f != project_uuid]
+    filename_parts.append(project_uuid)
+    filename_parts += f_process_names
+    filename_parts.append(process_name)
+    base_filename = "_".join(filename_parts) + extension  # Directly use `extension` here
+    return os.path.join(dirname, base_filename)
+
+
+# endregion
+
+# region Audio Management
+
+def transcribe_audio(tgt_file, project_path):
+    model = whisper.load_model("medium.en")
+    dataset_path = os.path.join(project_path, "dataset", "whisper.txt")
+    os.makedirs(os.path.dirname(dataset_path), exist_ok=True)
+    with open(dataset_path, 'w', encoding='utf-8') as outfile:
+        result = model.transcribe(tgt_file)
+        output = result["text"].lstrip()
+        outfile.write(output)
+    return dataset_path
+
+
+def merge_stems(stem_files, tgt_file, project_path: str):
+    combined = None
+    print(f"Combining stems to {tgt_file}")
+    # Define the output file name
+    output_file = update_filename(tgt_file, "joined", project_path)
+    # Load and combine each stem
+    for file in stem_files:
+        stem = None
+        load_attempt = 0
+        load_failed = True
+        while load_attempt < 3 and load_failed:
+            try:
+                print(f"Loading stem: {file}")
+                stem = AudioSegment.from_file(file)
+                load_failed = False
+                print(f"Loaded stem: {file}")
+            except Exception as e:
+                print(f"Failed to load {file} with error: {e}")
+                load_attempt += 1
+                sleep(1)
+        if stem is None:
+            print(f"Failed to load {file}. Skipping...")
+            continue
+        if combined is None:
+            combined = stem
+        else:
+            combined = combined.overlay(stem)
+    output_extension = os.path.splitext(output_file)[1]
+    # Export the combined audio to a new file
+    combined.export(output_file, format=output_extension.lstrip('.'))
+    return output_file
+
+
+def clean_audio(audio_path: str, project_path: str):
+    print(f"Cleaning {audio_path}")
+    # Read the wav file
+    rate, data = wavfile.read(audio_path)
+    # Handle stereo files
+    if data.ndim > 1 and data.shape[1] == 2:
+        print("Stereo file detected. Processing channels separately.")
+        # Process each channel with reduce_noise
+        left_channel = nr.reduce_noise(y=data[:, 0], sr=rate, use_torch=True)
+        right_channel = nr.reduce_noise(y=data[:, 1], sr=rate, use_torch=True)
+
+        # Recombine the channels
+        enhanced_speech = np.vstack((left_channel, right_channel)).T
+    else:
+        # Mono file or unexpected shape
+        enhanced_speech = nr.reduce_noise(y=data, sr=rate, use_torch=True)
+
+    out_file = update_filename(audio_path, "cleaned", project_path)
+    # Write the cleaned audio
+    wavfile.write(out_file, rate, enhanced_speech.astype(np.int16))
+    return out_file
+
+
+def chunk_audio(audio_file: str, chunk_len: int, project_path: str):
+    if not os.path.exists(audio_file):
+        return []
+
+    out_dir = os.path.join(project_path, "chunks", "original")
+    converted_dir = os.path.join(project_path, "chunks", "converted")
+    os.makedirs(out_dir, exist_ok=True)
+    os.makedirs(converted_dir, exist_ok=True)
+
+    # Ensure the output directory is empty
+    for f in os.listdir(out_dir):
+        os.remove(os.path.join(out_dir, f))
+
+    for f in os.listdir(converted_dir):
+        os.remove(os.path.join(converted_dir, f))
+
+    subprocess.run(f"ffmpeg -i {audio_file} -f segment -segment_time {chunk_len} -c copy {out_dir}/out%03d.wav",
+                   shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return [os.path.join(out_dir, f) for f in os.listdir(out_dir) if f.endswith(".wav")]
+
+
+def join_audio(chunks: list[str], out_name: str):
+    if not chunks:
+        return ""
+    print(f"Joining {len(chunks)} chunks to {out_name}")
+    out_dir = os.path.dirname(out_name)
+    # Temporary file to list all audio chunks
+    list_file_path = os.path.join(out_dir, "chunk_list.txt")
+    with open(list_file_path, 'w') as list_file:
+        for chunk in chunks:
+            list_file.write(f"file '{chunk}'\n")
+    subprocess.run(f"ffmpeg -y -f concat -safe 0 -i {list_file_path} -c copy {out_name}",
+                   shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # Set file permissions to read/write for owner and read for others
+    os.chmod(out_name, 0o644)
+    os.remove(list_file_path)
+    # Remove the chunks
+    shutil.rmtree(os.path.join(out_dir, "chunks"), ignore_errors=True)
+    return out_name
+
+
+def replace_audio(video_file: str, audio_file: str):
+    if not os.path.exists(video_file) or not os.path.exists(audio_file):
+        return
+    out_dir = os.path.join(os.path.dirname(__file__), "outputs")
+    out_file = update_filename(video_file, "replaced", out_dir)
+    subprocess.run(f"ffmpeg -y -i {video_file} -i {audio_file} -c:v copy -map 0:v:0 -map 1:a:0 {out_file}",
+                   shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return out_file
+
+
+def extract_audio(video_file: str, out_dir: str):
+    if not os.path.exists(video_file):
+        return ""
+    file_without_extension = os.path.splitext(video_file)[0]
+    audio_file = file_without_extension + ".wav"
+    audio_file = os.path.join(out_dir, os.path.basename(audio_file))
+    subprocess.run(f"ffmpeg -y -i {video_file} -vn -acodec pcm_s16le -ar 44100 -ac 2 {audio_file}",
+                   shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return audio_file
+
+# endregion

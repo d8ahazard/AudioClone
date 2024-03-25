@@ -5,7 +5,6 @@ This web application offers a suite of advanced audio processing features, inclu
 
 ## Features
 
-- **Audio Separation**: Isolate specific audio elements from a mix, such as vocals, speech, or instruments, using cutting-edge deep learning models.
 - **Noise Reduction**: Clean up audio recordings by removing background noise, enhancing the clarity and quality of the sound.
 - **Music Extraction**: Separate musical components from audio files, enabling users to extract instrumental or vocal tracks.
 - **Voice Cloning**: Clone the voice from an audio sample and apply it to another voice or text-to-speech output, using either traditional TTS (Text-to-Speech) methods or advanced voice cloning techniques.
