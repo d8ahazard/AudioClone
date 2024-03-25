@@ -21,7 +21,7 @@ from pydub import AudioSegment
 from scipy.io import wavfile
 from tqdm import tqdm
 
-from models.audiosep import AudioSep
+from helpers import printt
 from music_sep.music_sep import separate_music
 from pipeline import separate_audio
 from utils import get_ss_model
@@ -121,6 +121,7 @@ def update_filename(filename: str, process_name: str, project_path: str = None) 
 
 
 def sep_audio(audio_path: str, sep_description: str, project_path: str) -> str:
+    from models.audiosep import AudioSep
     sep_device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     ss_model = get_ss_model('config/audiosep_base.yaml', sep_device)
     model = AudioSep.from_pretrained("nielsr/audiosep-demo", ss_model=ss_model)
@@ -129,7 +130,8 @@ def sep_audio(audio_path: str, sep_description: str, project_path: str) -> str:
     separate_audio(model, audio_path, sep_description, output_file, sep_device, use_chunk=True)
     del model
     gc.collect()
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     return output_file
 
 
@@ -254,13 +256,14 @@ def clone_voice_openvoice(target_speaker: str, source_speaker: str, project_path
         download_checkpoint(ckpt_converter)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-
+    printt("Loading OpenVoice converter")
     tone_color_converter = ToneColorConverter(os.path.join(ckpt_converter, 'config.json'), device=device)
     tone_color_converter.load_ckpt(os.path.join(ckpt_converter, 'checkpoint.pth'))
-
+    printt("Loading SE extractor")
     source_se, _ = se_extractor.get_se(target_speaker, tone_color_converter, vad=True)
+    printt("Extracting SE for target speaker")
     target_se, _ = se_extractor.get_se(source_speaker, tone_color_converter, vad=True)
-
+    printt("Extracted SE for target speaker")
     # Ensure output directory exists and is writable
     output_dir = os.path.dirname(out_file)
     if output_dir:
@@ -274,6 +277,14 @@ def clone_voice_openvoice(target_speaker: str, source_speaker: str, project_path
         tgt_se=target_se,
         output_path=out_file,
     )
+    printt(f"Cloned voice to {out_file}")
+    del tone_color_converter
+    del source_se
+    del target_se
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    printt(f"Clone cleanup complete.")
     return out_file
 
 
@@ -380,6 +391,7 @@ def process_outputs(src_file: str, out_file: str):
 
 def process_separate(tgt_file: str, sep_audio_prompt: str, sep_type):
     global project_uuid
+    printt("Processing separate", True)
     project_uuid = ''.join(random.choices('0123456789abcdef', k=6))
     project_path = get_project_path(tgt_file)
     src_file = tgt_file
@@ -390,21 +402,28 @@ def process_separate(tgt_file: str, sep_audio_prompt: str, sep_type):
         total_steps += 1
         progress(step / total_steps, desc="Extracting audio")
         step += 1
+    printt(f"Processing inputs: {tgt_file}")
     tgt_file = process_input(tgt_file, project_path)
-
+    printt(f"Processed inputs: {tgt_file}")
     if sep_type == "Music":
-        progress(step / total_steps, desc="Separating music")
+        progress(step / total_steps, desc="Separating audio with MusicSep")
+        printt("Separating audio with musicSep")
         output = sep_music(tgt_file, project_path)
+        printt(f"Separated audio: {output}")
     else:
-        progress(step / total_steps, desc="Separating audio")
+        progress(step / total_steps, desc="Separating audio with AudioSep")
+        printt("Separating audio with AudioSep")
         output = sep_audio(tgt_file, sep_audio_prompt, project_path)
+        printt(f"Separated audio: {output}")
     step += 1
     progress(step / total_steps, desc="Separation complete.")
+    printt(f"Separation complete: {output}")
     return process_outputs(src_file, output)
 
 
 def process_clean(tgt_file):
     global project_uuid
+    printt("Processing clean", True)
     project_uuid = ''.join(random.choices('0123456789abcdef', k=6))
     project_path = get_project_path(tgt_file)
     src_file = tgt_file
@@ -418,7 +437,9 @@ def process_clean(tgt_file):
     tgt_file = process_input(tgt_file, project_path)
 
     progress(step / total_steps, desc="Cleaning audio")
+    printt("Cleaning")
     output = clean_audio(tgt_file, project_path)
+    printt(f"Cleaned audio: {output}")
     step += 1
     progress(step / total_steps, desc="Cleaning complete.")
 
@@ -428,6 +449,7 @@ def process_clean(tgt_file):
 def process_all(tgt_file: str, src_file: str, clone_type: str, options: List[str], sep_audio_prompt: str,
                 sep_type: str):
     global project_uuid
+    printt("Processing all", True)
     project_uuid = ''.join(random.choices('0123456789abcdef', k=6))
     project_path = get_project_path(tgt_file)
     src_tgt = tgt_file
@@ -443,14 +465,16 @@ def process_all(tgt_file: str, src_file: str, clone_type: str, options: List[str
     vox_file = None
     if "Clean" in options:
         progress(step / total_steps, desc="Cleaning audio")
-        print("Cleaning")
+        printt("Cleaning")
         tgt_file = clean_audio(tgt_file, project_path)
+        printt(f"Cleaned audio: {tgt_file}")
         step += 1
     if "Separate" in options:
         progress(step / total_steps, desc="Separating audio")
         if sep_type == "Music":
-            print("Separating with music separator...")
+            printt("Separating with music separator...")
             stems = sep_music(tgt_file, project_path, True)
+            printt(f"Separated: {stems}")
             if len(stems):
                 for file in stems:
                     if "vocal" in file:
@@ -458,18 +482,21 @@ def process_all(tgt_file: str, src_file: str, clone_type: str, options: List[str
                         vox_file = file
                         break
         else:
-            print("Separating with audiosep...")
+            printt("Separating with audiosep...")
             tgt_file = sep_audio(tgt_file, sep_audio_prompt, project_path)
+            printt(f"Separated: {tgt_file}")
         step += 1
     if clone_type == "TTS":
         progress(step / total_steps, desc="Cloning with TTS")
-        print(f"Cloning with TTS: {tgt_file} -> {src_file}")
+        printt(f"Cloning with TTS: {tgt_file} -> {src_file}")
         output = clone_voice_tts(tgt_file, src_file, project_path)
+        printt(f"Cloned with TTS: {output}")
         step += 1
     else:
         progress(step / total_steps, desc="Cloning with OpenVoice")
-        print(f"Cloning with OpenVoice: {tgt_file} -> {src_file}")
+        printt(f"Cloning with OpenVoice: {tgt_file} -> {src_file}")
         output = clone_voice_openvoice(tgt_file, src_file, project_path)
+        printt(f"Cloned with OpenVoice: {output}")
         step += 1
     if stems is not None:
         replaced = []
@@ -479,8 +506,11 @@ def process_all(tgt_file: str, src_file: str, clone_type: str, options: List[str
                 replaced.append(output)
             else:
                 replaced.append(stem)
+        printt(f"Merging stems")
         output = merge_stems(replaced, output, project_path)
+        printt(f"Merged stems: {output}")
     progress(step / total_steps, desc="Cloning complete.")
+    printt(f"Cloning complete: {output}")
     return process_outputs(src_tgt, output)
 
 

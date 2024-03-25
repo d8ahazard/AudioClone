@@ -5,21 +5,21 @@ import torch.nn as nn
 import torch.optim as optim
 from huggingface_hub import PyTorchModelHubMixin
 from torch.optim.lr_scheduler import LambdaLR
-
 from models.clap_encoder import CLAP_Encoder
 
 
 class AudioSep(pl.LightningModule, PyTorchModelHubMixin):
+
     def __init__(
-        self,
-        ss_model: nn.Module = None,
-        waveform_mixer = None,
-        query_encoder: nn.Module = CLAP_Encoder().eval(),
-        loss_function = None,
-        optimizer_type: str = None,
-        learning_rate: float = None,
-        lr_lambda_func = None,
-        use_text_ratio: float =1.0,
+            self,
+            ss_model: nn.Module = None,
+            waveform_mixer=None,
+            query_encoder: CLAP_Encoder = None,
+            loss_function=None,
+            optimizer_type: str = None,
+            learning_rate: float = None,
+            lr_lambda_func=None,
+            use_text_ratio: float = 1.0,
     ):
         r"""Pytorch Lightning wrapper of PyTorch model, including forward,
         optimization of model, etc.
@@ -36,13 +36,14 @@ class AudioSep(pl.LightningModule, PyTorchModelHubMixin):
         self.ss_model = ss_model
         self.waveform_mixer = waveform_mixer
         self.query_encoder = query_encoder
+        if self.query_encoder is None:
+            self.query_encoder = CLAP_Encoder().eval()
         self.query_encoder_type = self.query_encoder.encoder_type
         self.use_text_ratio = use_text_ratio
         self.loss_function = loss_function
         self.optimizer_type = optimizer_type
         self.learning_rate = learning_rate
         self.lr_lambda_func = lr_lambda_func
-
 
     def forward(self, x):
         pass
@@ -71,7 +72,7 @@ class AudioSep(pl.LightningModule, PyTorchModelHubMixin):
         batch_text = batch_audio_text_dict['text']
         batch_audio = batch_audio_text_dict['waveform']
         device = batch_audio.device
-        
+
         mixtures, segments = self.waveform_mixer(
             waveforms=batch_audio
         )
@@ -107,12 +108,12 @@ class AudioSep(pl.LightningModule, PyTorchModelHubMixin):
         loss = self.loss_function(output_dict, target_dict)
 
         self.log_dict({"train_loss": loss})
-        
+
         return loss
 
     def test_step(self, batch, batch_idx):
         pass
-    
+
     def configure_optimizers(self):
         r"""Configure optimizer.
         """
@@ -141,7 +142,7 @@ class AudioSep(pl.LightningModule, PyTorchModelHubMixin):
         }
 
         return output_dict
-    
+
 
 def get_model_class(model_type):
     if model_type == 'ResUNet30':

@@ -4,6 +4,8 @@ __author__ = 'https://github.com/ZFTurbo/'
 import gc
 from typing import List, Optional, Callable
 
+from helpers import printt
+
 if __name__ == '__main__':
     import os
 
@@ -26,6 +28,12 @@ import librosa
 import hashlib
 
 __VERSION__ = '1.0.1'
+
+
+def free_mem():
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 class Conv_TDF_net_trim_model(nn.Module):
@@ -120,33 +128,36 @@ def demix_base(mix, device, models, infer_session):
                 mix,
                 np.zeros((2, pad)),
                 np.zeros((2, trim))
-            ), 1
+            ), axis=1
         )
 
         mix_waves = []
         i = 0
-        mix_waves = []
         while i < n_sample + pad:
             waves = np.array(mix_p[:, i:i + model.chunk_size])
             mix_waves.append(waves)
             i += gen_size
 
-        # Convert the list of NumPy arrays to a single NumPy array
         mix_waves_np = np.array(mix_waves)
-
-        # Now convert the NumPy array to a PyTorch tensor
+        del mix_waves  # Free up the list memory
         mix_waves = torch.tensor(mix_waves_np, dtype=torch.float32).to(device)
+        del mix_waves_np  # Free up the numpy array memory
 
         with torch.no_grad():
-            _ort = infer_session
             stft_res = model.stft(mix_waves)
-            res = _ort.run(None, {'input': stft_res.cpu().numpy()})[0]
-            ten = torch.tensor(res)
-            tar_waves = model.istft(ten.to(device))
+            res = infer_session.run(None, {'input': stft_res.cpu().numpy()})[0]
+            del stft_res  # Free up tensor memory
+            ten = torch.tensor(res, device=device)
+            tar_waves = model.istft(ten)
             tar_waves = tar_waves.cpu()
             tar_signal = tar_waves[:, :, trim:-trim].transpose(0, 1).reshape(2, -1).numpy()[:, :-pad]
+            del tar_waves  # Free up tensor memory
 
         sources.append(tar_signal)
+
+    if device == 'cuda':
+        torch.cuda.empty_cache()  # Clear unused memory from PyTorch
+
     # print('Time demix base: {:.2f} sec'.format(time() - start_time))
     return np.array(sources)
 
@@ -155,23 +166,21 @@ def demix_full(mix, device, chunk_size, models, infer_session, overlap=0.75):
     start_time = time()
 
     step = int(chunk_size * (1 - overlap))
-    # print('Initial shape: {} Chunk size: {} Step: {} Device: {}'.format(mix.shape, chunk_size, step, device))
     result = np.zeros((1, 2, mix.shape[-1]), dtype=np.float32)
     divider = np.zeros((1, 2, mix.shape[-1]), dtype=np.float32)
 
-    total = 0
     for i in range(0, mix.shape[-1], step):
-        total += 1
-
         start = i
         end = min(i + chunk_size, mix.shape[-1])
-        # print('Chunk: {} Start: {} End: {}'.format(total, start, end))
         mix_part = mix[:, start:end]
         sources = demix_base(mix_part, device, models, infer_session)
-        # print(sources.shape)
         result[..., start:end] += sources
         divider[..., start:end] += 1
+        del sources  # Free up the numpy array memory after each chunk is processed
+
     sources = result / divider
+    del result, divider  # Free up numpy arrays
+
     # print('Final shape: {} Overall time: {:.2f}'.format(sources.shape, time() - start_time))
     return sources
 
@@ -180,7 +189,9 @@ class EnsembleDemucsMDXMusicSeparationModel:
     """
     Doesn't do any separation just passes the input back as output
     """
-    def __init__(self, cpu: bool = False, single_onnx: bool = False, use_kim_model_1: bool = False, overlap_large: float = 0.75, overlap_small: float = 0.5, chunk_size: int = 1000000):
+
+    def __init__(self, cpu: bool = False, single_onnx: bool = False, use_kim_model_1: bool = False,
+                 overlap_large: float = 0.75, overlap_small: float = 0.5, chunk_size: int = 1000000):
         """
             options - user options
         """
@@ -263,8 +274,6 @@ class EnsembleDemucsMDXMusicSeparationModel:
             remote_url_onnx1 = 'https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/Kim_Vocal_2.onnx'
         if not os.path.isfile(model_path_onnx1):
             torch.hub.download_url_to_file(remote_url_onnx1, model_path_onnx1)
-        print('Model path: {}'.format(model_path_onnx1))
-        print('Device: {} Chunk size: {}'.format(device, chunk_size))
         self.infer_session1 = ort.InferenceSession(
             model_path_onnx1,
             providers=providers,
@@ -280,8 +289,6 @@ class EnsembleDemucsMDXMusicSeparationModel:
             remote_url_onnx2 = 'https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/Kim_Inst.onnx'
             if not os.path.isfile(model_path_onnx2):
                 torch.hub.download_url_to_file(remote_url_onnx2, model_path_onnx2)
-            print('Model path: {}'.format(model_path_onnx2))
-            print('Device: {} Chunk size: {}'.format(device, chunk_size))
             self.infer_session2 = ort.InferenceSession(
                 model_path_onnx2,
                 providers=providers,
@@ -320,15 +327,15 @@ class EnsembleDemucsMDXMusicSeparationModel:
             output_sample_rates: Dictionary of sample rates separated sequence
         """
 
-
         # print('Update percent func: {}'.format(update_percent_func))
 
         separated_music_arrays = {}
         output_sample_rates = {}
-
+        printt(f"Processing file {current_file_number + 1} of {total_files}")
         audio = np.expand_dims(mixed_sound_array.T, axis=0)
+        printt("Expand dims")
         audio = torch.from_numpy(audio).type('torch.FloatTensor').to(self.device)
-
+        printt("Torch from numpy")
         overlap_large = self.overlap_large
         overlap_small = self.overlap_small
 
@@ -340,22 +347,24 @@ class EnsembleDemucsMDXMusicSeparationModel:
             nonlocal step_counter
             step_counter += 1
             if update_percent_func is not None:
-                progress = min(step_counter/total_steps, total_steps/total_steps)
+                progress = min(step_counter / total_steps, total_steps / total_steps)
                 update_percent_func(progress, message)
 
         # Get Demics vocal only
         model = self.model_vocals_only
+        printt("LoadModel")
         shifts = 1
         overlap = overlap_large
         vocals_demucs = 0.5 * apply_model(model, audio, shifts=shifts, overlap=overlap)[0][3].cpu().numpy()
-
+        printt("Apply model 1")
         update_progress("Demucs vocal only")
 
         vocals_demucs += 0.5 * -apply_model(model, -audio, shifts=shifts, overlap=overlap)[0][3].cpu().numpy()
-
+        printt("Apply model 2")
         update_progress("Demixing full..")
 
         overlap = overlap_large
+
         sources1 = demix_full(
             mixed_sound_array.T,
             self.device,
@@ -364,11 +373,10 @@ class EnsembleDemucsMDXMusicSeparationModel:
             self.infer_session1,
             overlap=overlap
         )[0]
-
+        printt("Demix full 1")
         vocals_mdxb1 = sources1
-
+        printt("Copy sources")
         update_progress("Demix full 1")
-
         if self.single_onnx is False:
             sources2 = -demix_full(
                 -mixed_sound_array.T,
@@ -378,30 +386,38 @@ class EnsembleDemucsMDXMusicSeparationModel:
                 self.infer_session2,
                 overlap=overlap
             )[0]
-
+            printt("Demix full 2")
             # it's instrumental so need to invert
             instrum_mdxb2 = sources2
+            printt("Demix full 2 - instrum_mdxb2")
             vocals_mdxb2 = mixed_sound_array.T - instrum_mdxb2
+            printt("Demix full 2 - focals_mdxb2")
             weights = np.array([12, 8, 3])
+            printt("Demix full 2 - weights")
             vocals = (weights[0] * vocals_mdxb1.T + weights[1] * vocals_mdxb2.T + weights[
                 2] * vocals_demucs.T) / weights.sum()
+            printt("Demix full 2 - vocals")
         else:
             weights = np.array([6, 1])
+            printt("Demix full 2 - weights")
             vocals = (weights[0] * vocals_mdxb1.T + weights[1] * vocals_demucs.T) / weights.sum()
+            printt("Demix full 2 - vocals")
 
-        update_progress("Demix full 2")
+        update_progress("Demix full 2 done.")
 
         # vocals
         separated_music_arrays['vocals'] = vocals
+        printt("Set vocals out")
         output_sample_rates['vocals'] = sample_rate
-
+        printt("Set vocals out sr")
         if not only_vocals:
             # Generate instrumental
             instrum = mixed_sound_array - vocals
-
+            printt("Generate instrumental")
             audio = np.expand_dims(instrum.T, axis=0)
+            printt("Expand dims")
             audio = torch.from_numpy(audio).type('torch.FloatTensor').to(self.device)
-
+            printt("Torch from numpy")
             all_outs = []
             model_names = ["drums", "bass", "other", "vocals"]
             for i, model in enumerate(self.models):
@@ -411,7 +427,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
                     overlap = overlap_large
                 out = 0.5 * apply_model(model, audio, shifts=shifts, overlap=overlap)[0].cpu().numpy() \
                       + 0.5 * -apply_model(model, -audio, shifts=shifts, overlap=overlap)[0].cpu().numpy()
-
+                printt(f"Processed instrument: {model_names[i]}")
                 update_progress(f"Processing instrument: {model_names[i]}")
 
                 if i == 2:
@@ -423,56 +439,158 @@ class EnsembleDemucsMDXMusicSeparationModel:
                 out[1] = self.weights_bass[i] * out[1]
                 out[2] = self.weights_other[i] * out[2]
                 out[3] = self.weights_vocals[i] * out[3]
-
+                printt(f"Weighted instrument: {model_names[i]}")
                 all_outs.append(out)
             out = np.array(all_outs).sum(axis=0)
+            printt("Summed all instruments")
             out[0] = out[0] / self.weights_drums.sum()
             out[1] = out[1] / self.weights_bass.sum()
             out[2] = out[2] / self.weights_other.sum()
             out[3] = out[3] / self.weights_vocals.sum()
-
+            printt("Normalized all instruments")
             # other
             res = mixed_sound_array - vocals - out[0].T - out[1].T
+            printt("Subtract drums and bass")
             res = np.clip(res, -1, 1)
+            printt("Clip res")
             separated_music_arrays['other'] = (2 * res + out[2].T) / 3.0
             output_sample_rates['other'] = sample_rate
+            printt("Set other out")
 
             # drums
             res = mixed_sound_array - vocals - out[1].T - out[2].T
+            printt("Subtract vocals and bass")
             res = np.clip(res, -1, 1)
+            printt("Clip res")
             separated_music_arrays['drums'] = (res + 2 * out[0].T.copy()) / 3.0
             output_sample_rates['drums'] = sample_rate
-
+            printt("Set drums out")
             # bass
             res = mixed_sound_array - vocals - out[0].T - out[2].T
+            printt("Subtract vocals and drums")
             res = np.clip(res, -1, 1)
+            printt("Clip res")
             separated_music_arrays['bass'] = (res + 2 * out[1].T) / 3.0
             output_sample_rates['bass'] = sample_rate
+            printt("Set bass out")
 
             bass = separated_music_arrays['bass']
             drums = separated_music_arrays['drums']
             other = separated_music_arrays['other']
-
+            printt("Set bass, drums, other")
             separated_music_arrays['other'] = mixed_sound_array - vocals - bass - drums
             separated_music_arrays['drums'] = mixed_sound_array - vocals - bass - other
             separated_music_arrays['bass'] = mixed_sound_array - vocals - drums - other
+            printt("Set other, drums, bass")
         else:
             update_progress("Separating vox from other...")
             # Combine all non-vocal sounds into the "other" track
             other = mixed_sound_array - vocals
+            printt("Subtract vocals")
             separated_music_arrays['other'] = other
             output_sample_rates['other'] = sample_rate
+            printt("Set other out")
 
         update_progress("Separation complete...")
 
+        printt("Cleanup...")
+        if not only_vocals:
+            del instrum
+            free_mem()
+            printt("Delete instrum")
+
+        del audio
+        free_mem()
+        printt("Delete audio")
+
+        del vocals
+        free_mem()
+        printt("Delete vocals")
+
+        del mixed_sound_array
+        free_mem()
+        printt("Delete mixed_sound_array")
+
+        del vocals_demucs
+        free_mem()
+        printt("Delete vocals_demucs")
+
+        del sources1
+        free_mem()
+        printt("Delete sources1")
+
+        if not self.single_onnx:
+            del sources2
+            free_mem()
+            printt("Delete sources2")
+
+        if not only_vocals:
+            del instrum_mdxb2
+            free_mem()
+            printt("Delete instrum_mdxb2")
+
+            del weights
+            free_mem()
+            printt("Delete weights")
+
+            del vocals_mdxb1
+            free_mem()
+            printt("Delete vocals_mdxb1")
+        else:
+            del weights
+            free_mem()
+            printt("Delete weights")
+
+            del other
+            free_mem()
+
+            del vocals_mdxb1
+            del vocals_mdxb2
+            del instrum_mdxb2
+            del model
+            free_mem()
+            printt("Delete other")
+
         return separated_music_arrays, output_sample_rates
+
+    def cleanup(self):
+        # Explicitly delete tensors and models
+        for model in self.models:
+            model.cpu()  # Move model to CPU, which helps in releasing the GPU memory
+            del model  # Delete the model to decrease reference count
+
+        del self.models  # Finally, remove the list holding the models
+        torch.cuda.empty_cache()  # Suggest to PyTorch to clean up unused memory
+        printt("Delete models")
+        if hasattr(self, 'model_vocals_only'):
+            del self.model_vocals_only
+            printt("Deleted model_vocals_only params.")
+        if hasattr(self, 'infer_session1'):
+            self.infer_session1.end_profiling()
+            del self.infer_session1  # Assuming this is an ONNX session
+            printt("Deleted infer_session1.")
+        if hasattr(self, 'infer_session2') and not self.single_onnx:
+            self.infer_session2.end_profiling()
+            del self.infer_session2  # Assuming this is an ONNX session
+            printt("Deleted infer_session2.")
+        if hasattr(self, 'mdx_models1'):
+            del self.mdx_models1
+            printt("Deleted mdx_models1.")
+        if hasattr(self, 'mdx_models2'):
+            del self.mdx_models2
+            printt("Deleted mdx_models2.")
+
+        free_mem()
+        printt("Cleanup complete.")
 
 
 class EnsembleDemucsMDXMusicSeparationModelLowGPU:
     """
     Doesn't do any separation just passes the input back as output
     """
-    def __init__(self, cpu: bool = False, single_onnx: bool = False, use_kim_model_1: bool = False, overlap_large: float = 0.75, overlap_small: float = 0.5, chunk_size: int = None):
+
+    def __init__(self, cpu: bool = False, single_onnx: bool = False, use_kim_model_1: bool = False,
+                 overlap_large: float = 0.75, overlap_small: float = 0.5, chunk_size: int = None):
         # print(options)
 
         if torch.cuda.is_available():
@@ -575,9 +693,7 @@ class EnsembleDemucsMDXMusicSeparationModelLowGPU:
 
         vocals_demucs += 0.5 * -apply_model(model_vocals, -audio, shifts=shifts, overlap=overlap)[0][3].cpu().numpy()
         del model_vocals
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        free_mem()
 
         if update_percent_func is not None:
             val = 100 * (current_file_number + 0.20) / total_files
@@ -612,6 +728,9 @@ class EnsembleDemucsMDXMusicSeparationModelLowGPU:
         vocals_mdxb1 = sources1
         del infer_session1
         del mdx_models1
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         if update_percent_func is not None:
             val = 100 * (current_file_number + 0.30) / total_files
@@ -648,6 +767,9 @@ class EnsembleDemucsMDXMusicSeparationModelLowGPU:
             vocals_mdxb2 = mixed_sound_array.T - instrum_mdxb2
             del infer_session2
             del mdx_models2
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             weights = np.array([12, 8, 3])
             vocals = (weights[0] * vocals_mdxb1.T + weights[1] * vocals_mdxb2.T + weights[
                 2] * vocals_demucs.T) / weights.sum()
@@ -705,9 +827,7 @@ class EnsembleDemucsMDXMusicSeparationModelLowGPU:
         out[3] = self.weights_vocals[i] * out[3]
         all_outs.append(out)
         del model
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        free_mem()
 
         i = 2
         overlap = overlap_large
@@ -729,9 +849,7 @@ class EnsembleDemucsMDXMusicSeparationModelLowGPU:
         out[3] = self.weights_vocals[i] * out[3]
         all_outs.append(out)
         del model
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        free_mem()
 
         i = 3
         model = pretrained.get_model('hdemucs_mmi')
@@ -749,9 +867,7 @@ class EnsembleDemucsMDXMusicSeparationModelLowGPU:
         out[3] = self.weights_vocals[i] * out[3]
         all_outs.append(out)
         del model
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        free_mem()
 
         out = np.array(all_outs).sum(axis=0)
         out[0] = out[0] / self.weights_drums.sum()
@@ -818,18 +934,21 @@ def separate_music(input_audio: List[str], output_folder: str, cpu: bool = False
     model = None
     if model is None:
         if large_gpu is True:
-            print('Use fast large GPU memory version of code')
-            model = EnsembleDemucsMDXMusicSeparationModel(cpu, single_onnx, use_kim_model_1, overlap_large, overlap_small, chunk_size)
+            printt('Use fast large GPU memory version of code')
+            model = EnsembleDemucsMDXMusicSeparationModel(cpu, single_onnx, use_kim_model_1, overlap_large,
+                                                          overlap_small, chunk_size)
         else:
-            print('Use low GPU memory version of code')
-            model = EnsembleDemucsMDXMusicSeparationModelLowGPU(cpu, single_onnx, use_kim_model_1, overlap_large, overlap_small, chunk_size)
+            printt('Use low GPU memory version of code')
+            model = EnsembleDemucsMDXMusicSeparationModelLowGPU(cpu, single_onnx, use_kim_model_1, overlap_large,
+                                                                overlap_small, chunk_size)
+        printt('MusicSep model initialized')
     outputs = []
     for i, input_audio in enumerate(input_audio):
-        print('Separating: {}'.format(input_audio))
+        printt('Separating: {}'.format(input_audio))
         audio, sr = librosa.load(input_audio, mono=False, sr=44100)
         if len(audio.shape) == 1:
             audio = np.stack([audio, audio], axis=0)
-        print("Input audio: {} Sample rate: {}".format(audio.shape, sr))
+        printt("Input audio: {} Sample rate: {}".format(audio.shape, sr))
         result, sample_rates = model.separate_music_file(
             audio.T,
             sr,
@@ -846,7 +965,7 @@ def separate_music(input_audio: List[str], output_folder: str, cpu: bool = False
             output_path = os.path.join(output_folder, output_name)
             sf.write(output_path, result[instrum], sample_rates[instrum], subtype='FLOAT')
             outputs.append(output_path)
-            print('File created: {}'.format(output_path))
+            printt('File created: {}'.format(output_path))
 
         # instrumental part 1
         inst = audio.T - result['vocals']
@@ -855,7 +974,6 @@ def separate_music(input_audio: List[str], output_folder: str, cpu: bool = False
         sf.write(output_path, inst, sr, subtype='FLOAT')
         outputs.append(output_path)
         print('File created: {}'.format(output_path))
-
         if not only_vocals:
             # instrumental part 2
             inst2 = result['bass'] + result['drums'] + result['other']
@@ -865,14 +983,39 @@ def separate_music(input_audio: List[str], output_folder: str, cpu: bool = False
             outputs.append(output_path)
             print('File created: {}'.format(output_path))
 
+        # Conditionally add 'inst2' if not only_vocals
+        if not only_vocals:
+            del inst2
+            printt('Delete inst2')
+
+        del audio
+        printt('Delete audio')
+
+        del result
+        printt('Delete result')
+
+        del inst
+        printt('Delete inst')
+
+        del sr
+        printt('Delete sr')
+
+        del all_instrum
+        printt('Delete all_instrum')
+
     if update_percent_func is not None:
         val = 100
         update_percent_func(int(val), f"Separated {len(input_audio)} files")
+    printt('All files separated, deleting model.')
+    # If the model is not None and has a cleanup() method, call it
+    if model is not None and hasattr(model, 'cleanup'):
+        printt('Model has cleanup method, using it.')
+        model.cleanup()
+        printt('Model cleanup done.')
     del model
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
+    printt('Model deleted.')
+    free_mem()
+    printt('CUDA cache cleared (twice).')
     return outputs
 
 
@@ -882,5 +1025,3 @@ def md5(fname):
         for chunk in iter(lambda: f.read(4096), b""):
             hash_md5.update(chunk)
     return hash_md5.hexdigest()
-
-
