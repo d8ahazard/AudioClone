@@ -7,4 +7,5 @@
 espeak-ng.exe
 /processed
 __pycache__
+hub_token.txt
 libespeak-ng.dll
