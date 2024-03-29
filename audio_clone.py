@@ -455,7 +455,6 @@ class EnsembleDemucsMDXMusicSeparationModel:
             # MDX-B model 2  initialization
             self.chunk_size = chunk_size
             self.mdx_models2 = get_models('tdf_extra', load=False, device=device, vocals_model_type=2)
-            root_path = os.path.dirname(os.path.realpath(__file__)) + '/'
             model_path_onnx2 = os.path.join(model_folder, 'Kim_Inst.onnx')
             remote_url_onnx2 = 'https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/Kim_Inst.onnx'
             if not os.path.isfile(model_path_onnx2):
@@ -716,8 +715,14 @@ class EnsembleDemucsMDXMusicSeparationModel:
             free_mem()
 
             del vocals_mdxb1
-            del vocals_mdxb2
-            del instrum_mdxb2
+            try:
+                del vocals_mdxb2
+            except:
+                pass
+            try:
+                del instrum_mdxb2
+            except:
+                pass
             del model
             free_mem()
             printt("Delete other")
@@ -1084,7 +1089,7 @@ class EnsembleDemucsMDXMusicSeparationModelLowGPU:
 
 
 def separate_music(input_audio: List[str], output_folder: str, cpu: bool = False, overlap_large: float = 0.6,
-                   overlap_small: float = 0.5, single_onnx: bool = False, chunk_size: int = 1000000,
+                   overlap_small: float = 0.5, single_onnx: bool = True, chunk_size: int = 1000000,
                    large_gpu: bool = False, use_kim_model_1: bool = False, only_vocals: bool = True,
                    update_percent_func: Optional[Callable[[int, str], None]] = None) -> List[str]:
     for file in input_audio:
