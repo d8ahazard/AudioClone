@@ -1382,7 +1382,7 @@ def transcribe_audio(tgt_file, project_path):
     # model_path = "G-Root/speaker-diarization-optimized"
     model_path = "pyannote/speaker-diarization-3.1"
     # TODO: Save this somewhere reasonable
-    pipeline = Pipeline.from_pretrained(model_path, use_auth_token="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")
+    pipeline = Pipeline.from_pretrained(model_path, use_auth_token="")
     if torch.cuda.is_available():
         pipeline = pipeline.to(torch.device("cuda"))
     # run the pipeline on an audio file
