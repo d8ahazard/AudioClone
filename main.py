@@ -229,8 +229,8 @@ css_str = """
     height: 400px;
 }
 """
-
-with gr.Blocks(css=css_str) as app:
+favicon_path = os.path.join(os.path.dirname(__file__), "favicon.png")
+with gr.Blocks(title="AudioClone", css=css_str) as app:
     with gr.Row():
         with gr.Column():
             gr.HTML("Inputs")
@@ -333,4 +333,4 @@ if __name__ == "__main__":
     # os.environ["GRADIO_TEMP_DIR"] = temp_path
     # gradio_client.client.DEFAULT_TEMP_DIR = temp_path
     app.queue()
-    app.launch()
+    app.launch(favicon_path=favicon_path)
