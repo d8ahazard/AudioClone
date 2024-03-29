@@ -43,6 +43,16 @@ source venv/bin/activate
 bash
 python ./install.py
 ```
+3. Ensure that ffmpeg is installed.
+
+```
+winget install ffmpeg
+```
+or
+
+```
+apt-get install ffmpeg
+```
 
 ### Running the Application
 

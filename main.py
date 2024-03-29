@@ -2,6 +2,7 @@ import argparse
 import os
 import random
 import shutil
+import subprocess
 from typing import List
 
 import gradio as gr
@@ -54,7 +55,7 @@ def process_outputs(src_file: str, out_file: str, filename_parts: List[str] = No
     return gr.update(visible=False, value=None), gr.update(visible=True, value=None)
 
 
-def process_separate(tgt_file: str, speaker_idx: int):
+def process_separate(tgt_file: str, speaker_idx: int, sep_options: List[str]):
     global project_uuid
     printt("Processing separate", True)
     project_uuid = ''.join(random.choices('0123456789abcdef', k=6))
@@ -77,14 +78,15 @@ def process_separate(tgt_file: str, speaker_idx: int):
     printt("Separating audio with musicSep")
     output = sep_music(tgt_file, project_path)
     printt(f"Separated audio")
-    speaker_times = audio_clone.transcribe_audio(output, project_path)
-    printt(f"Extracted speaker times")
-    # TODO: Allow user to select speaker
-    if len(speaker_times) >= speaker_idx + 1:
-        printt(f"Multiple speakers detected, selecting {speaker_idx}")
-        speakers = audio_clone.separate_speakers(tgt_file, speaker_times, project_path)
-        # Store this so it can be replaced when combining stems
-        output = speakers[speaker_idx]
+    if "Transcribe" in sep_options:
+        speaker_times = audio_clone.transcribe_audio(output, project_path)
+        printt(f"Extracted speaker times")
+        # TODO: Allow user to select speaker
+        if len(speaker_times) >= speaker_idx + 1:
+            printt(f"Multiple speakers detected, selecting {speaker_idx}")
+            speakers = audio_clone.separate_speakers(tgt_file, speaker_times, project_path)
+            # Store this so it can be replaced when combining stems
+            output = speakers[speaker_idx]
     step += 1
     progress(step / total_steps, desc="Separation complete.")
     printt(f"Separation complete: {output}")
@@ -119,7 +121,7 @@ def process_clean(tgt_file):
     return process_outputs(src_file, output, filename_parts, False)
 
 
-def process_all(tgt_file: str, src_file: str, clone_type: str, options: List[str], speaker_idx: int):
+def process_all(tgt_file: str, src_file: str, clone_type: str, options: List[str], speaker_idx: int, sep_options: List[str]):
     printt("Processing all", True)
     project_uuid = ''.join(random.choices('0123456789abcdef', k=6))
     audio_clone.set_project_uuid(project_uuid)
@@ -157,14 +159,15 @@ def process_all(tgt_file: str, src_file: str, clone_type: str, options: List[str
                     break
         stems = [f for f in stems if f != tgt_file]
         step += 1
-    speaker_times = audio_clone.transcribe_audio(tgt_file, project_path)
-    if len(speaker_times) >= speaker_idx + 1:
-        printt(f"Multiple speakers detected, selecting {speaker_idx}")
-        speakers = audio_clone.separate_speakers(tgt_file, speaker_times, project_path)
-        # Store this so it can be replaced when combining stems
-        tgt_file = speakers[speaker_idx]
-        other_files = [f for f in speakers if f != tgt_file]
-        stems = stems + other_files
+    if "Transcribe" in sep_options:
+        speaker_times = audio_clone.transcribe_audio(tgt_file, project_path)
+        if len(speaker_times) >= speaker_idx + 1:
+            printt(f"Multiple speakers detected, selecting {speaker_idx}")
+            speakers = audio_clone.separate_speakers(tgt_file, speaker_times, project_path)
+            # Store this so it can be replaced when combining stems
+            tgt_file = speakers[speaker_idx]
+            other_files = [f for f in speakers if f != tgt_file]
+            stems = stems + other_files
     if clone_type == "TTS":
         progress(step / total_steps, desc="Cloning with TTS")
         printt(f"Cloning with TTS: {tgt_file} -> {src_file}")
@@ -250,7 +253,7 @@ with gr.Blocks(css=css_str) as app:
             with gr.Row():
                 separate_options = gr.CheckboxGroup(label="Separate Options",
                                                     choices=["Transcribe", "Separate Instruments"],
-                                                    value=["Transcribe"])
+                                                    value=["Transcribe"], interactive=True)
                 target_speaker_select = gr.Dropdown(label="Speaker", choices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], value=0)
                 separate_button = gr.Button("Separate Voice")
     with gr.Row():
@@ -272,9 +275,9 @@ with gr.Blocks(css=css_str) as app:
 
     output_elements = [video_output, audio_output]
 
-    separate_button.click(fn=process_separate, inputs=[tgt_speaker, target_speaker_select], outputs=output_elements)
+    separate_button.click(fn=process_separate, inputs=[tgt_speaker, target_speaker_select, separate_options], outputs=output_elements)
     clean_button.click(fn=process_clean, inputs=[tgt_speaker], outputs=output_elements)
-    submit_button.click(fn=process_all, inputs=[tgt_speaker, src_speaker, clone_type_select, clone_options, target_speaker_select],
+    submit_button.click(fn=process_all, inputs=[tgt_speaker, src_speaker, clone_type_select, clone_options, target_speaker_select, separate_options],
                         outputs=output_elements)
 
     tgt_speaker.upload(handle_tgt_speaker_change, inputs=[tgt_speaker], outputs=[tgt_video, tgt_audio, tgt_speaker])
@@ -310,9 +313,17 @@ if __name__ == "__main__":
         exit(1)
     else:
         print("CUDA execution provider found.")
+
+    # Ensure FFMPEG is installed
+    try:
+        subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, check=True)
+    except FileNotFoundError:
+        print("FFMPEG not found. Please install FFMPEG.")
+        exit(1)
+
     # Delete everything in the temp directory
     temp_path = os.path.join(os.path.dirname(__file__), "temp")
-
+    os.makedirs(temp_path, exist_ok=True)
     if not args.debug:
         for file in os.listdir(temp_path):
             file_path = os.path.join(temp_path, file)

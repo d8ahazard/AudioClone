@@ -1390,7 +1390,7 @@ def transcribe_audio(tgt_file, project_path):
             if hub_token == "PUT_YOUR_HF_HUB_TOKEN_HERE":
                 print("Please replace the placeholder in hub_token.txt with your Hugging Face Hub token.")
                 return [tgt_file]
-    pipeline = Pipeline.from_pretrained(model_path, use_auth_token="")
+    pipeline = Pipeline.from_pretrained(model_path, use_auth_token=hub_token)
     if torch.cuda.is_available():
         pipeline = pipeline.to(torch.device("cuda"))
     # run the pipeline on an audio file
