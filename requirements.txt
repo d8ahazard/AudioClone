@@ -11,7 +11,7 @@ lightning==2.2.1
 noisereduce==3.0.2
 numpy==1.22.0
 onnx>=1.15.0
-openai-whisper
+pyannote.audio==3.1.1
 pyloudnorm==0.1.1
 regex==2023.12.25
 scipy==1.11.4

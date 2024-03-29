@@ -1,9 +1,8 @@
+import argparse
 import os
 import random
 import shutil
-from time import sleep
 from typing import List
-import argparse
 
 import gradio as gr
 from pydub import AudioSegment
@@ -14,36 +13,55 @@ from audio_clone import printt, get_project_path, is_video, is_audio, sep_music,
 args = None
 
 
-def process_outputs(src_file: str, out_file: str):
+def process_outputs(src_file: str, out_file: str, filename_parts: List[str] = None, restore_video: bool = True):
+    printt("Processing outputs")
+    out_folder = os.path.join(os.path.dirname(__file__), "outputs")
+    if filename_parts is not None:
+        base_filename = "_".join(filename_parts)
+    else:
+        base_filename = os.path.splitext(os.path.basename(src_file))[0]
+    dest_file = os.path.join(out_folder, base_filename)
     if out_file is None or not os.path.exists(out_file):
         audio_clone.set_project_uuid(None)
         return gr.update(visible=False, value=None), gr.update(visible=True, value=None)
-    if is_video(src_file):
+    if is_video(src_file) and restore_video:
         out_file = replace_audio(src_file, out_file)
+        printt(f"Replacing audio in video: {src_file} -> {out_file}")
+        out_extension = os.path.splitext(src_file)[1]
+        dest_file = dest_file + out_extension
+        shutil.move(out_file, dest_file)
+        printt(f"Replaced audio in video: {dest_file}")
         audio_clone.set_project_uuid(None)
-        return gr.update(visible=True, value=out_file), gr.update(visible=False, value=None)
+        return gr.update(visible=True, value=dest_file), gr.update(visible=False, value=None)
+    if is_audio(out_file) and not restore_video:
+        src_file = out_file
     if is_audio(src_file):
+        printt(f"Processing audio: {src_file} -> {out_file}")
         if src_file.endswith(".mp3"):
             # Convert out_file to mp3
-            mp3_file = out_file.replace(".wav", ".mp3")
+            dest_file = dest_file + ".mp3"
             audio = AudioSegment.from_wav(out_file)
-            audio.export(mp3_file, format="mp3")
+            audio.export(dest_file, format="mp3")
             # Delete the wav file
             os.remove(out_file)
-            audio_clone.set_project_uuid(None)
-            return gr.update(visible=False, value=None), gr.update(visible=True, value=mp3_file)
+        else:
+            dest_file = dest_file + ".wav"
+            shutil.move(out_file, dest_file)
         audio_clone.set_project_uuid(None)
-        return gr.update(visible=False, value=None), gr.update(visible=True, value=out_file)
+        return gr.update(visible=False, value=None), gr.update(visible=True, value=dest_file)
+
     audio_clone.set_project_uuid(None)
     return gr.update(visible=False, value=None), gr.update(visible=True, value=None)
 
 
-def process_separate(tgt_file: str):
+def process_separate(tgt_file: str, speaker_idx: int):
     global project_uuid
     printt("Processing separate", True)
     project_uuid = ''.join(random.choices('0123456789abcdef', k=6))
     audio_clone.set_project_uuid(project_uuid)
     project_path = get_project_path(tgt_file)
+    base_filename = os.path.splitext(os.path.basename(tgt_file))[0]
+    filename_parts = [base_filename, project_uuid, "separated"]
     src_file = tgt_file
     step = 0
     progress = gr.Progress()
@@ -58,11 +76,19 @@ def process_separate(tgt_file: str):
     progress(step / total_steps, desc="Separating audio with MusicSep")
     printt("Separating audio with musicSep")
     output = sep_music(tgt_file, project_path)
-    printt(f"Separated audio: {output}")
+    printt(f"Separated audio")
+    speaker_times = audio_clone.transcribe_audio(output, project_path)
+    printt(f"Extracted speaker times")
+    # TODO: Allow user to select speaker
+    if len(speaker_times) >= speaker_idx + 1:
+        printt(f"Multiple speakers detected, selecting {speaker_idx}")
+        speakers = audio_clone.separate_speakers(tgt_file, speaker_times, project_path)
+        # Store this so it can be replaced when combining stems
+        output = speakers[speaker_idx]
     step += 1
     progress(step / total_steps, desc="Separation complete.")
     printt(f"Separation complete: {output}")
-    return process_outputs(src_file, output)
+    return process_outputs(src_file, output, filename_parts, False)
 
 
 def process_clean(tgt_file):
@@ -71,6 +97,8 @@ def process_clean(tgt_file):
     project_uuid = ''.join(random.choices('0123456789abcdef', k=6))
     audio_clone.set_project_uuid(project_uuid)
     project_path = get_project_path(tgt_file)
+    base_filename = os.path.splitext(os.path.basename(tgt_file))[0]
+    filename_parts = [base_filename, project_uuid, "cleaned"]
     src_file = tgt_file
     step = 0
     progress = gr.Progress()
@@ -88,14 +116,16 @@ def process_clean(tgt_file):
     step += 1
     progress(step / total_steps, desc="Cleaning complete.")
 
-    return process_outputs(src_file, output)
+    return process_outputs(src_file, output, filename_parts, False)
 
 
-def process_all(tgt_file: str, src_file: str, clone_type: str, options: List[str]):
+def process_all(tgt_file: str, src_file: str, clone_type: str, options: List[str], speaker_idx: int):
     printt("Processing all", True)
     project_uuid = ''.join(random.choices('0123456789abcdef', k=6))
     audio_clone.set_project_uuid(project_uuid)
     project_path = get_project_path(tgt_file)
+    base_filename = os.path.splitext(os.path.basename(tgt_file))[0]
+    filename_parts = [base_filename, project_uuid]
     src_tgt = tgt_file
     step = 0
     progress = gr.Progress()
@@ -106,81 +136,74 @@ def process_all(tgt_file: str, src_file: str, clone_type: str, options: List[str
         step += 1
     tgt_file = process_input(tgt_file, project_path)
     stems = None
-    vox_file = None
     if "Clean" in options:
         progress(step / total_steps, desc="Cleaning audio")
         printt("Cleaning")
         tgt_file = clean_audio(tgt_file, project_path)
         printt(f"Cleaned audio: {tgt_file}")
+        filename_parts.append("cleaned")
         step += 1
     if "Separate" in options:
         progress(step / total_steps, desc="Separating audio")
         printt("Separating with music separator...")
         stems = sep_music(tgt_file, project_path, True)
         printt(f"Separated: {stems}")
+        filename_parts.append("separated")
         if len(stems):
             for file in stems:
                 if "vocal" in file:
                     tgt_file = file
                     vox_file = file
                     break
-
+        stems = [f for f in stems if f != tgt_file]
         step += 1
-    transcript_file = audio_clone.transcribe_audio(tgt_file, project_path)
+    speaker_times = audio_clone.transcribe_audio(tgt_file, project_path)
+    if len(speaker_times) >= speaker_idx + 1:
+        printt(f"Multiple speakers detected, selecting {speaker_idx}")
+        speakers = audio_clone.separate_speakers(tgt_file, speaker_times, project_path)
+        # Store this so it can be replaced when combining stems
+        tgt_file = speakers[speaker_idx]
+        other_files = [f for f in speakers if f != tgt_file]
+        stems = stems + other_files
     if clone_type == "TTS":
         progress(step / total_steps, desc="Cloning with TTS")
         printt(f"Cloning with TTS: {tgt_file} -> {src_file}")
         output = clone_voice_tts(tgt_file, src_file, project_path)
         printt(f"Cloned with TTS: {output}")
+        filename_parts.append("cloned-tts")
         step += 1
     else:
         progress(step / total_steps, desc="Cloning with OpenVoice")
         printt(f"Cloning with OpenVoice: {tgt_file} -> {src_file}")
         output = clone_voice_openvoice(tgt_file, src_file, project_path)
         printt(f"Cloned with OpenVoice: {output}")
+        filename_parts.append("cloned-openvoice")
         step += 1
     if stems is not None:
-        replaced = []
-        # Replace vox_file with the cloned audio
-        for stem in stems:
-            if stem == vox_file:
-                replaced.append(output)
-            else:
-                replaced.append(stem)
+        stems.append(output)
         printt(f"Merging stems")
-        output = merge_stems(replaced, output, project_path)
+        output = merge_stems(stems, output, project_path)
         printt(f"Merged stems: {output}")
     progress(step / total_steps, desc="Cloning complete.")
     printt(f"Cloning complete: {output}")
-    return process_outputs(src_tgt, output)
+    return process_outputs(src_tgt, output, filename_parts, True)
 
 
-def handle_tgt_speaker_change(file_path):
+def handle_tgt_speaker_change(tgt_path):
     # Assuming is_video_fn and is_audio_fn are functions that determine the file type
     target_video = gr.update(visible=False)
     target_audio = gr.update(visible=False)
     target_speaker = gr.update(visible=True)
-    if file_path:
-        print(f"File path: {file_path}")
-        temp_path = os.path.join(os.path.dirname(__file__), "temp")
-        # Move the file to the temp directory
-        os.makedirs(temp_path, exist_ok=True)
-        temp_file_path = os.path.join(temp_path, os.path.basename(file_path))
-        if not os.path.exists(temp_file_path):
-            shutil.move(file_path, temp_path)
-            sleep(0.5)
-        if os.path.exists(file_path):
-            # Really delete it
-            os.remove(file_path)
-        file_path = temp_file_path
-        if is_video(file_path):
-            target_video = gr.update(visible=True, value=file_path)
+    if tgt_path:
+        print(f"File path: {tgt_path}")
+        if is_video(tgt_path):
+            target_video = gr.update(visible=True, value=tgt_path)
             target_audio = gr.update(visible=False)
-            target_speaker = gr.update(value=file_path)
-        elif is_audio(file_path):
-            target_audio = gr.update(visible=True, value=file_path)
+            target_speaker = gr.update(value=tgt_path)
+        elif is_audio(tgt_path):
+            target_audio = gr.update(visible=True, value=tgt_path)
             target_video = gr.update(visible=False)
-            target_speaker = gr.update(value=file_path)
+            target_speaker = gr.update(value=tgt_path)
     else:
         # Show target_speaker if no file or an unsupported file type is uploaded
         target_speaker = gr.update()
@@ -206,33 +229,53 @@ css_str = """
 
 with gr.Blocks(css=css_str) as app:
     with gr.Row():
-        separate_button = gr.Button("Separate")
-        clean_button = gr.Button("Clean")
-        submit_button = gr.Button("Clone Voice")
-
-    with gr.Column():
-        with gr.Row():
-            src_speaker = gr.Audio(label="Voice to Clone", type="filepath", elem_classes=["mediaItem"])
-            tgt_speaker = gr.File(label="Destination File", type="filepath", file_types=[".mp4", ".wav"],
-                                  elem_classes=["mediaItem"])
-            tgt_video = gr.Video(label="Destination Video", visible=False, sources=["upload"],
-                                 elem_classes=["mediaItem"])
-            tgt_audio = gr.Audio(label="Destination Audio", visible=False, sources=["upload"],
-                                 elem_classes=["mediaItem"])
-            audio_output = gr.Audio(label="Output Audio", elem_classes=["mediaItem"])
-            video_output = gr.Video(label="Output Video", visible=False, elem_classes=["mediaItem"])
-
-    with gr.Column():
-        with gr.Row():
-            clone_type_select = gr.Radio(label="Clone Type", choices=["OpenVoice", "TTS"], value="OpenVoice")
-            clone_options = gr.CheckboxGroup(label="Clone Options", choices=["Separate", "Clean"],
-                                             value=["Separate"])
+        with gr.Column():
+            gr.HTML("Inputs")
+            with gr.Row():
+                src_speaker = gr.Audio(label="Voice to Clone", type="filepath", elem_classes=["mediaItem"])
+                tgt_speaker = gr.File(label="Destination File", type="filepath", file_types=[".mp4", ".wav"],
+                                      elem_classes=["mediaItem"])
+                tgt_video = gr.Video(label="Destination Video", visible=False, sources=["upload"],
+                                     elem_classes=["mediaItem"], format="mp4")
+                tgt_audio = gr.Audio(label="Destination Audio", visible=False, sources=["upload"],
+                                     elem_classes=["mediaItem"])
+        with gr.Column():
+            gr.HTML("Outputs")
+            with gr.Row():
+                audio_output = gr.Audio(label="Output Audio", elem_classes=["mediaItem"])
+                video_output = gr.Video(label="Output Video", visible=False, elem_classes=["mediaItem"], format="mp4")
+    with gr.Row():
+        with gr.Column():
+            gr.HTML("Separating")
+            with gr.Row():
+                separate_options = gr.CheckboxGroup(label="Separate Options",
+                                                    choices=["Transcribe", "Separate Instruments"],
+                                                    value=["Transcribe"])
+                target_speaker_select = gr.Dropdown(label="Speaker", choices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], value=0)
+                separate_button = gr.Button("Separate Voice")
+    with gr.Row():
+        with gr.Column():
+            gr.HTML("Cleaning")
+            with gr.Row():
+                stationary_clean_radio = gr.Radio(label="Clean Type", choices=["Stationary", "Non-Stationary"],
+                                                  value="Non-Stationary")
+                noise_reduction_slider = gr.Slider(label="Noise Reduction", minimum=0, maximum=1, value=1, step=0.01)
+                clean_button = gr.Button("Clean Voice")
+    with gr.Row():
+        with gr.Column():
+            gr.HTML("Cloning")
+            with gr.Row():
+                clone_type_select = gr.Radio(label="Clone Type", choices=["OpenVoice", "TTS"], value="OpenVoice")
+                clone_options = gr.CheckboxGroup(label="Clone Options", choices=["Separate", "Clean"],
+                                                 value=["Separate"])
+                submit_button = gr.Button("Clone Voice")
 
     output_elements = [video_output, audio_output]
 
-    separate_button.click(fn=process_separate, inputs=[tgt_speaker], outputs=output_elements)
+    separate_button.click(fn=process_separate, inputs=[tgt_speaker, target_speaker_select], outputs=output_elements)
     clean_button.click(fn=process_clean, inputs=[tgt_speaker], outputs=output_elements)
-    submit_button.click(fn=process_all, inputs=[tgt_speaker, src_speaker, clone_type_select, clone_options], outputs=output_elements)
+    submit_button.click(fn=process_all, inputs=[tgt_speaker, src_speaker, clone_type_select, clone_options, target_speaker_select],
+                        outputs=output_elements)
 
     tgt_speaker.upload(handle_tgt_speaker_change, inputs=[tgt_speaker], outputs=[tgt_video, tgt_audio, tgt_speaker])
     tgt_speaker.clear(handle_tgt_speaker_change, inputs=[tgt_speaker], outputs=[tgt_video, tgt_audio, tgt_speaker])
@@ -251,6 +294,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     import audio_clone
+
     audio_clone.print_debug = args.debug
     # Ensure CUDA execution provider is aviailable for onnxruntime-gpu
     try:
@@ -267,11 +311,15 @@ if __name__ == "__main__":
     else:
         print("CUDA execution provider found.")
     # Delete everything in the temp directory
+    temp_path = os.path.join(os.path.dirname(__file__), "temp")
+
     if not args.debug:
-        temp_path = os.path.join(os.path.dirname(__file__), "temp")
         for file in os.listdir(temp_path):
             file_path = os.path.join(temp_path, file)
             if os.path.isfile(file_path):
                 os.remove(file_path)
+    # Set the GRADIO_TEMP_DIR environment variable to the temp directory
+    # os.environ["GRADIO_TEMP_DIR"] = temp_path
+    # gradio_client.client.DEFAULT_TEMP_DIR = temp_path
     app.queue()
     app.launch()

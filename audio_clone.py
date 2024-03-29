@@ -17,9 +17,9 @@ import numpy as np
 import onnxruntime as ort
 import psutil
 import requests
+import scipy as sp
 import soundfile as sf
 import torch
-import whisper
 from PIL import Image
 from TTS.api import TTS
 from demucs import pretrained
@@ -27,7 +27,8 @@ from demucs.apply import apply_model
 from demucs.states import load_model
 from openvoice_cli import se_extractor
 from openvoice_cli.api import ToneColorConverter
-from pydub import AudioSegment
+from pyannote.audio import Pipeline
+from pydub import AudioSegment, silence
 from scipy.io import wavfile
 from torch import nn as nn
 from tqdm import tqdm
@@ -1114,7 +1115,7 @@ def separate_music(input_audio: List[str], output_folder: str, cpu: bool = False
         printt('MusicSep model initialized')
     outputs = []
     for i, input_audio in enumerate(input_audio):
-        printt('Separating: {}'.format(input_audio))
+        printt('Separating:')
         audio, sr = librosa.load(input_audio, mono=False, sr=44100)
         if len(audio.shape) == 1:
             audio = np.stack([audio, audio], axis=0)
@@ -1376,15 +1377,58 @@ def update_filename(filename: str, process_name: str, project_path: str = None) 
 
 # region Audio Management
 
+
 def transcribe_audio(tgt_file, project_path):
-    model = whisper.load_model("medium.en")
-    dataset_path = os.path.join(project_path, "dataset", "whisper.txt")
-    os.makedirs(os.path.dirname(dataset_path), exist_ok=True)
-    with open(dataset_path, 'w', encoding='utf-8') as outfile:
-        result = model.transcribe(tgt_file)
-        output = result["text"].lstrip()
-        outfile.write(output)
-    return dataset_path
+    # model_path = "G-Root/speaker-diarization-optimized"
+    model_path = "pyannote/speaker-diarization-3.1"
+    # TODO: Save this somewhere reasonable
+    pipeline = Pipeline.from_pretrained(model_path, use_auth_token="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")
+    if torch.cuda.is_available():
+        pipeline = pipeline.to(torch.device("cuda"))
+    # run the pipeline on an audio file
+    diarization = pipeline(tgt_file)
+    speakers = {}
+    for turn, _, speaker in diarization.itertracks(yield_label=True):
+        if speaker not in speakers:
+            speakers[speaker] = []
+        speakers[speaker].append((turn.start, turn.end))
+        print(f"start={turn.start:.1f}s stop={turn.end:.1f}s speaker_{speaker}")
+    speaker_files = []
+    for speaker in speakers:
+        speaker_file = os.path.join(project_path, f"speaker_{speaker}.txt")
+        print(f"Speaker {speaker}")
+        with open(speaker_file, "w") as f:
+            for start, end in speakers[speaker]:
+                f.write(f"start={start}s|stop={end}s\n")
+        speaker_files.append(speaker_file)
+    del pipeline
+    free_mem()
+    return speaker_files
+
+
+def separate_speakers(tgt_file, speaker_times, project_path):
+    original_audio = AudioSegment.from_file(tgt_file)
+    output_files = []
+    speaker_id = 0
+    for speaker_file in speaker_times:
+        intervals = []
+        with open(os.path.join(project_path, speaker_file), 'r') as file:
+            for line in file.readlines():
+                parts = line.strip().split('|')
+                start = float(parts[0].split('=')[1].rstrip('s')) * 1000  # Convert seconds to milliseconds
+                end = float(parts[1].split('=')[1].rstrip('s')) * 1000
+                intervals.append((start, end))
+
+        speaker_audio = AudioSegment.silent(duration=len(original_audio))
+        for start, end in intervals:
+            speaker_audio = speaker_audio.overlay(original_audio[start:end], position=start)
+
+        output_path = os.path.join(project_path, f"separated_speaker_{speaker_id}.wav")
+        speaker_audio.export(output_path, format='wav')
+        output_files.append(output_path)
+        print(f"Generated separated audio for speaker {speaker_id} at {output_path}")
+        speaker_id += 1
+    return output_files
 
 
 def merge_stems(stem_files, tgt_file, project_path: str):
@@ -1488,7 +1532,10 @@ def replace_audio(video_file: str, audio_file: str):
     if not os.path.exists(video_file) or not os.path.exists(audio_file):
         return
     out_dir = os.path.join(os.path.dirname(__file__), "outputs")
-    out_file = update_filename(video_file, "replaced", out_dir)
+    out_file = update_filename(audio_file, "replaced", out_dir)
+    video_extension = os.path.splitext(video_file)[1]
+    audio_extension = os.path.splitext(audio_file)[1]
+    out_file = out_file.replace(audio_extension, video_extension)
     subprocess.run(f"ffmpeg -y -i {video_file} -i {audio_file} -c:v copy -map 0:v:0 -map 1:a:0 {out_file}",
                    shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return out_file
