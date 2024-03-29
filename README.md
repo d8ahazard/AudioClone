@@ -35,8 +35,9 @@ bash
 python -m venv venv
 source venv/bin/activate
 ```
-
-3. Install the required Python packages:
+1. If building on windows, you will need to have the Visual Studio C++ build tools installed:
+   https://visualstudio.microsoft.com/visual-cpp-build-tools/
+2. Install the required Python packages:
 
 ```
 bash
