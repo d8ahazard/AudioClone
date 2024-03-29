@@ -43,5 +43,11 @@ for package in packages:
 
 torch_cmd = ["torch==2.1.0", "torchaudio==2.1.0", "torchlibrosa==0.1.0", "torchvision==0.16.0", "--index-url", "https://download.pytorch.org/whl/cu121"]
 pip_install(torch_cmd)
+# Create the hub_token.txt file and write "Put your hub token here" in it.
+hub_token_file = os.path.join(os.path.dirname(os.path.realpath(__file__)), "hub_token.txt")
+if not os.path.exists(hub_token_file):
+    with open(hub_token_file, "w") as f:
+        f.write("Put your hub token here")
+
 pip_install(["onnxruntime-gpu", "onnxruntime"], True)
 pip_install("onnxruntime-gpu")
