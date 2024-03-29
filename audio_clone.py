@@ -1382,6 +1382,14 @@ def transcribe_audio(tgt_file, project_path):
     # model_path = "G-Root/speaker-diarization-optimized"
     model_path = "pyannote/speaker-diarization-3.1"
     # TODO: Save this somewhere reasonable
+    hub_token_file = os.path.join(os.path.dirname(__file__), "hub_token.txt")
+    hub_token = None
+    if os.path.exists(hub_token_file):
+        with open(hub_token_file, "r") as f:
+            hub_token = f.read().strip()
+            if hub_token == "PUT_YOUR_HF_HUB_TOKEN_HERE":
+                print("Please replace the placeholder in hub_token.txt with your Hugging Face Hub token.")
+                return [tgt_file]
     pipeline = Pipeline.from_pretrained(model_path, use_auth_token="")
     if torch.cuda.is_available():
         pipeline = pipeline.to(torch.device("cuda"))
