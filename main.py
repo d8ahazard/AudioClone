@@ -14,6 +14,18 @@ from audio_clone import printt, get_project_path, is_video, is_audio, sep_music,
 args = None
 
 
+def list_projects():
+    project_path = os.path.join(os.path.dirname(__file__), "outputs")
+    return [f for f in os.listdir(project_path) if os.path.isdir(os.path.join(project_path, f))]
+
+
+def select_project(project_name: str = None):
+    projects = list_projects()
+    if project_name is not None and project_name in projects:
+        return project_name
+    return projects[0] if len(projects) > 0 else None
+
+
 def process_outputs(src_file: str, out_file: str, filename_parts: List[str] = None, restore_video: bool = True):
     printt("Processing outputs")
     out_folder = os.path.join(os.path.dirname(__file__), "outputs")
@@ -121,7 +133,8 @@ def process_clean(tgt_file):
     return process_outputs(src_file, output, filename_parts, False)
 
 
-def process_all(tgt_file: str, src_file: str, clone_type: str, options: List[str], speaker_idx: int, sep_options: List[str]):
+def process_all(tgt_file: str, src_file: str, clone_type: str, options: List[str], speaker_idx: int,
+                sep_options: List[str]):
     printt("Processing all", True)
     project_uuid = ''.join(random.choices('0123456789abcdef', k=6))
     audio_clone.set_project_uuid(project_uuid)
@@ -247,37 +260,79 @@ with gr.Blocks(title="AudioClone", css=css_str) as app:
             with gr.Row():
                 audio_output = gr.Audio(label="Output Audio", elem_classes=["mediaItem"])
                 video_output = gr.Video(label="Output Video", visible=False, elem_classes=["mediaItem"], format="mp4")
-    with gr.Row():
-        with gr.Column():
-            gr.HTML("Separating")
+    with gr.Tabs():
+        with gr.Tab("Settings"):
             with gr.Row():
-                separate_options = gr.CheckboxGroup(label="Separate Options",
-                                                    choices=["Transcribe", "Separate Instruments"],
-                                                    value=["Transcribe"], interactive=True)
-                target_speaker_select = gr.Dropdown(label="Speaker", choices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], value=0)
-                separate_button = gr.Button("Separate Voice")
-    with gr.Row():
-        with gr.Column():
-            gr.HTML("Cleaning")
+                with gr.Column():
+                    gr.HTML("Separating")
+                    with gr.Row():
+                        separate_options = gr.CheckboxGroup(label="Separate Options",
+                                                            choices=["Transcribe", "Separate Instruments"],
+                                                            value=["Transcribe"], interactive=True)
+                        target_speaker_select = gr.Dropdown(label="Speaker", choices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+                                                            value=0)
+                        separate_button = gr.Button("Separate Voice")
             with gr.Row():
-                stationary_clean_radio = gr.Radio(label="Clean Type", choices=["Stationary", "Non-Stationary"],
-                                                  value="Non-Stationary")
-                noise_reduction_slider = gr.Slider(label="Noise Reduction", minimum=0, maximum=1, value=1, step=0.01)
-                clean_button = gr.Button("Clean Voice")
-    with gr.Row():
-        with gr.Column():
-            gr.HTML("Cloning")
+                with gr.Column():
+                    gr.HTML("Cleaning")
+                    with gr.Row():
+                        stationary_clean_radio = gr.Radio(label="Clean Type", choices=["Stationary", "Non-Stationary"],
+                                                          value="Non-Stationary")
+                        noise_reduction_slider = gr.Slider(label="Noise Reduction", minimum=0, maximum=1, value=1,
+                                                           step=0.01)
+                        clean_button = gr.Button("Clean Voice")
             with gr.Row():
-                clone_type_select = gr.Radio(label="Clone Type", choices=["OpenVoice", "TTS"], value="OpenVoice")
-                clone_options = gr.CheckboxGroup(label="Clone Options", choices=["Separate", "Clean"],
-                                                 value=["Separate"])
-                submit_button = gr.Button("Clone Voice")
+                with gr.Column():
+                    gr.HTML("Cloning")
+                    with gr.Row():
+                        clone_type_select = gr.Radio(label="Clone Type", choices=["OpenVoice", "TTS"],
+                                                     value="OpenVoice")
+                        clone_options = gr.CheckboxGroup(label="Clone Options", choices=["Separate", "Clean"],
+                                                         value=["Separate"])
+                        submit_button = gr.Button("Clone Voice")
+        with gr.Tab("Project Files"):
+            with gr.Row():
+                with gr.Column():
+                    project_select = gr.Dropdown(label="Project", choices=list_projects(), value=select_project())
+                    selected_project = select_project()
+                    if selected_project:
+                        full_path = os.path.join(os.path.dirname(__file__), "outputs", selected_project)
+                    else:
+                        full_path = os.path.join(os.path.dirname(__file__), "outputs")
+                    project_browser = gr.FileExplorer(label="Browse Project", root_dir=full_path, visible=True, file_count="single")
+                    selected_text = gr.Textbox(label="Selected File", value="", visible=False)
+                    selected_video = gr.Video(label="Selected Video", visible=False, sources=["upload"], format="mp4")
+                    selected_audio = gr.Audio(label="Selected Audio", visible=False, sources=["upload"])
+
+    def select_project_browser(project_path):
+        check_path = os.path.join(os.path.dirname(__file__), "outputs")
+        if check_path not in project_path and not os.path.exists(project_path):
+            project_path = os.path.join(check_path, project_path)
+        if os.path.exists(project_path):
+            return gr.update(visible=True, root_dir=project_path)
+        return gr.update(visible=False, value=None)
+
+    def select_project_browser_element(project_path):
+        if project_path:
+            if is_video(project_path):
+                return gr.update(visible=True, value=project_path), gr.update(visible=False, value=None), gr.update(visible=False, value=None)
+            elif is_audio(project_path):
+                return gr.update(visible=False, value=None), gr.update(visible=False, value=None), gr.update(visible=True, value=project_path)
+            return gr.update(visible=False, value=None), gr.update(visible=True, value=project_path), gr.update(visible=False, value=None)
+        return gr.update(visible=False, value=None), gr.update(visible=False, value=None), gr.update(visible=False, value=None)
+
+    project_select.change(fn=select_project_browser, inputs=[project_select], outputs=[project_browser])
+    project_elements = [selected_text, selected_video, selected_audio]
+    project_browser.change(fn=select_project_browser_element, inputs=[project_browser], outputs=project_elements)
 
     output_elements = [video_output, audio_output]
 
-    separate_button.click(fn=process_separate, inputs=[tgt_speaker, target_speaker_select, separate_options], outputs=output_elements)
+    separate_button.click(fn=process_separate, inputs=[tgt_speaker, target_speaker_select, separate_options],
+                          outputs=output_elements)
     clean_button.click(fn=process_clean, inputs=[tgt_speaker], outputs=output_elements)
-    submit_button.click(fn=process_all, inputs=[tgt_speaker, src_speaker, clone_type_select, clone_options, target_speaker_select, separate_options],
+    submit_button.click(fn=process_all,
+                        inputs=[tgt_speaker, src_speaker, clone_type_select, clone_options, target_speaker_select,
+                                separate_options],
                         outputs=output_elements)
 
     tgt_speaker.upload(handle_tgt_speaker_change, inputs=[tgt_speaker], outputs=[tgt_video, tgt_audio, tgt_speaker])
