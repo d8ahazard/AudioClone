@@ -304,7 +304,13 @@ if __name__ == "__main__":
         os.environ["CUDA_VISIBLE_DEVICES"] = "0"
         import onnxruntime
     except ImportError:
-        print("onnxruntime not found. Please install onnxruntime-gpu to use the GPU.")
+        print("Onnxruntime not found. Please run the install.py script and try again.")
+        exit(1)
+
+    try:
+        import TTS
+    except ImportError:
+        print("TTS not found. Please run the install.py script and try again.")
         exit(1)
 
     execution_providers = onnxruntime.get_available_providers()
@@ -320,6 +326,11 @@ if __name__ == "__main__":
     except FileNotFoundError:
         print("FFMPEG not found. Please install FFMPEG.")
         exit(1)
+
+    hub_token_file = os.path.join(os.path.dirname(os.path.realpath(__file__)), "hub_token.txt")
+    if not os.path.exists(hub_token_file):
+        with open(hub_token_file, "w") as f:
+            f.write("Put your hub token here")
 
     # Delete everything in the temp directory
     temp_path = os.path.join(os.path.dirname(__file__), "temp")
