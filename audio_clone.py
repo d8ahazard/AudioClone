@@ -1246,9 +1246,10 @@ def clone_voice_openvoice(target_speaker: str, source_speaker: str, project_path
     tone_color_converter = ToneColorConverter(os.path.join(ckpt_converter, 'config.json'), device=device)
     tone_color_converter.load_ckpt(os.path.join(ckpt_converter, 'checkpoint.pth'))
     printt("Loading SE extractor")
-    source_se, _ = se_extractor.get_se(target_speaker, tone_color_converter, vad=True)
+    use_vad = False
+    source_se, _ = se_extractor.get_se(target_speaker, tone_color_converter, vad=use_vad)
     printt("Extracting SE for target speaker")
-    target_se, _ = se_extractor.get_se(source_speaker, tone_color_converter, vad=True)
+    target_se, _ = se_extractor.get_se(source_speaker, tone_color_converter, vad=use_vad)
     printt("Extracted SE for target speaker")
     # Ensure output directory exists and is writable
     output_dir = os.path.dirname(out_file)
@@ -1256,13 +1257,20 @@ def clone_voice_openvoice(target_speaker: str, source_speaker: str, project_path
         if not os.path.exists(output_dir):
             os.makedirs(output_dir, exist_ok=True)
 
+    tau = 0.5
+
     # Run the tone color converter
     tone_color_converter.convert(
         audio_src_path=target_speaker,
         src_se=source_se,
         tgt_se=target_se,
         output_path=out_file,
+        tau=tau,
     )
+    processed_path = os.path.join(os.path.dirname(__file__), "processed")
+    # Delete everything in the processed directory
+    if os.path.exists(processed_path):
+        shutil.rmtree(processed_path)
     printt(f"Cloned voice to {out_file}")
     del tone_color_converter
     del source_se

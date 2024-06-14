@@ -12,11 +12,20 @@ from audio_clone import printt, get_project_path, is_video, is_audio, sep_music,
     clean_audio, clone_voice_tts, clone_voice_openvoice, replace_audio, process_input
 
 args = None
+project_uuid = None
 
 
 def list_projects():
     project_path = os.path.join(os.path.dirname(__file__), "outputs")
     return [f for f in os.listdir(project_path) if os.path.isdir(os.path.join(project_path, f))]
+
+
+def list_project_files(project_name: str):
+    project_files = [""]
+    if project_name is not None:
+        project_path = os.path.join(os.path.dirname(__file__), "outputs", project_name)
+        project_files = [f for f in os.listdir(project_path) if os.path.isfile(os.path.join(project_path, f))]
+    return project_files
 
 
 def select_project(project_name: str = None):
@@ -135,6 +144,7 @@ def process_clean(tgt_file):
 
 def process_all(tgt_file: str, src_file: str, clone_type: str, options: List[str], speaker_idx: int,
                 sep_options: List[str]):
+    global project_uuid
     printt("Processing all", True)
     project_uuid = ''.join(random.choices('0123456789abcdef', k=6))
     audio_clone.set_project_uuid(project_uuid)
@@ -304,6 +314,7 @@ with gr.Blocks(title="AudioClone", css=css_str) as app:
                     selected_video = gr.Video(label="Selected Video", visible=False, sources=["upload"], format="mp4")
                     selected_audio = gr.Audio(label="Selected Audio", visible=False, sources=["upload"])
 
+
     def select_project_browser(project_path):
         check_path = os.path.join(os.path.dirname(__file__), "outputs")
         if check_path not in project_path and not os.path.exists(project_path):
@@ -320,6 +331,7 @@ with gr.Blocks(title="AudioClone", css=css_str) as app:
                 return gr.update(visible=False, value=None), gr.update(visible=False, value=None), gr.update(visible=True, value=project_path)
             return gr.update(visible=False, value=None), gr.update(visible=True, value=project_path), gr.update(visible=False, value=None)
         return gr.update(visible=False, value=None), gr.update(visible=False, value=None), gr.update(visible=False, value=None)
+
 
     project_select.change(fn=select_project_browser, inputs=[project_select], outputs=[project_browser])
     project_elements = [selected_text, selected_video, selected_audio]

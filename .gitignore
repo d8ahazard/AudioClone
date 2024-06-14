@@ -1,6 +1,7 @@
 /.venv
 /checkpoint/*
-/.idea
+.idea/**
+/venv/**
 /temp
 /espeak-ng-data
 /outputs
@@ -9,4 +10,3 @@ espeak-ng.exe
 __pycache__
 hub_token.txt
 libespeak-ng.dll
-hub_token.txt
